@@ -1,0 +1,28 @@
+<clickhouse>
+  <profiles>
+    <default>
+      <allow_experimental_object_type>1</allow_experimental_object_type>
+      <allow_experimental_json_type>1</allow_experimental_json_type>
+    </default>
+  </profiles>
+  <users>
+    <ch_app_admin>
+      <password>CH_APP_ADMIN_PASSWORD_PLACEHOLDER</password>
+      <access_management>1</access_management>
+      <profile>default</profile>
+      <quota>default</quota>
+      <networks>
+        <ip>::/0</ip>
+      </networks>
+    </ch_app_admin>
+    <ch_ingest>
+      <password>CH_INGEST_PASSWORD_PLACEHOLDER</password>
+      <access_management>0</access_management>
+      <profile>default</profile>
+      <quota>default</quota>
+      <networks>
+        <ip>::/0</ip>
+      </networks>
+    </ch_ingest>
+  </users>
+</clickhouse>

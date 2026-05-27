@@ -1,0 +1,24 @@
+<clickhouse>
+  <listen_host>0.0.0.0</listen_host>
+  <storage_configuration>
+    <disks>
+      <s3>
+        <type>s3</type>
+        <endpoint from_env="CLICKHOUSE_S3_ENDPOINT"/>
+        <access_key_id from_env="CLICKHOUSE_S3_ACCESS_KEY_ID"/>
+        <secret_access_key from_env="CLICKHOUSE_S3_SECRET_ACCESS_KEY"/>
+        <region from_env="CLICKHOUSE_S3_REGION"/>
+        <metadata_path>/var/lib/clickhouse/disks/s3/</metadata_path>
+      </s3>
+    </disks>
+    <policies>
+      <s3>
+        <volumes>
+          <main>
+            <disk>s3</disk>
+          </main>
+        </volumes>
+      </s3>
+    </policies>
+  </storage_configuration>
+</clickhouse>

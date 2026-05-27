@@ -1,0 +1,354 @@
+networks:
+  sekant-net:
+    name: sekant-net
+
+volumes:
+  caddy_data:
+  clickhouse_data:
+  postgres_data:
+  sekant_secrets:
+
+services:
+  init-secrets:
+    image: ${SEKANT_INIT_SECRETS_IMAGE:-${SEKANT_INIT_SECRETS_IMAGE_REPO:-${SEKANT_IMAGE_REPO:-sekantsec/management-console}}:init-secrets-${SEKANT_INIT_SECRETS_IMAGE_TAG:-${SEKANT_IMAGE_TAG:-latest}}}
+    container_name: sekant-init-secrets
+    restart: unless-stopped
+    environment:
+      CADDY_DOMAIN: ${CADDY_DOMAIN:-localhost}
+      PUBLIC_URL: ${PUBLIC_URL:-https://localhost}
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
+      KEYCLOAK_ADMIN_EMAIL: ${KEYCLOAK_ADMIN_EMAIL:-admin@sekant.local}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-admin@12345}
+      CH_INGEST_USER: ${CH_INGEST_USER:-ch_ingest}
+      INGEST_DOMAIN: ${INGEST_DOMAIN:-localhost}
+      INGEST_PORT: ${INGEST_PORT:-31415}
+      FLUENT_BIT_INPUT_PORT: ${FLUENT_BIT_INPUT_PORT:-31415}
+      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
+      GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
+      MICROSOFT_OAUTH_TENANT_ID: ${MICROSOFT_OAUTH_TENANT_ID:-common}
+      MICROSOFT_OAUTH_CLIENT_ID: ${MICROSOFT_OAUTH_CLIENT_ID:-}
+      MICROSOFT_OAUTH_CLIENT_SECRET: ${MICROSOFT_OAUTH_CLIENT_SECRET:-}
+      OKTA_OIDC_ISSUER: ${OKTA_OIDC_ISSUER:-}
+      OKTA_OAUTH_CLIENT_ID: ${OKTA_OAUTH_CLIENT_ID:-}
+      OKTA_OAUTH_CLIENT_SECRET: ${OKTA_OAUTH_CLIENT_SECRET:-}
+    volumes:
+      - sekant_secrets:/run/secrets
+    entrypoint: ["/bin/sh", "-c", "sh /usr/local/bin/init-secrets.sh && tail -f /dev/null"]
+    healthcheck:
+      test: ["CMD-SHELL", "ls /run/secrets/keycloak_admin_password && ls /run/secrets/realm-export.json && ls /run/secrets/users.xml && ls /run/secrets/fluent-bit.conf && ls /run/secrets/security_events.lua && ls /run/secrets/Caddyfile"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    networks:
+      - sekant-net
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: sekant-caddy
+    restart: unless-stopped
+    dns_opt:
+      - ndots:0
+    environment:
+      CADDY_DOMAIN: ${CADDY_DOMAIN:-localhost}
+      INGEST_DOMAIN: ${INGEST_DOMAIN:-localhost}
+      INGEST_PORT: ${INGEST_PORT:-31415}
+      FLUENT_BIT_INPUT_PORT: ${FLUENT_BIT_INPUT_PORT:-31415}
+    ports:
+      - "${DASHBOARD_HTTP_PORT:-80}:80"
+      - "${DASHBOARD_HTTPS_PORT:-443}:443"
+      - "${INGEST_PORT:-31415}:${INGEST_PORT:-31415}"
+    volumes:
+      - sekant_secrets:/run/secrets:ro
+      - caddy_data:/data
+    command: ["caddy", "run", "--config", "/run/secrets/Caddyfile", "--adapter", "caddyfile"]
+    depends_on:
+      init-secrets:
+        condition: service_healthy
+      nginx:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --spider --no-check-certificate https://127.0.0.1/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    networks:
+      - sekant-net
+
+  nginx:
+    image: ${SEKANT_IMAGE_REPO:-sekantsec/management-console}:nginx-${SEKANT_IMAGE_TAG:-latest}
+    container_name: sekant-nginx
+    restart: unless-stopped
+    depends_on:
+      - frontend
+      - backend
+      - keycloak
+    healthcheck:
+      test: ["CMD-SHELL", "nginx -t || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks:
+      - sekant-net
+
+  frontend:
+    image: ${SEKANT_IMAGE_REPO:-sekantsec/management-console}:frontend-${SEKANT_IMAGE_TAG:-latest}
+    container_name: sekant-frontend
+    restart: unless-stopped
+    expose:
+      - "3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --spider http://127.0.0.1:3000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - sekant-net
+
+  backend:
+    image: ${SEKANT_IMAGE_REPO:-sekantsec/management-console}:backend-${SEKANT_IMAGE_TAG:-latest}
+    container_name: sekant-backend
+    restart: unless-stopped
+    environment:
+      PUBLIC_URL: ${PUBLIC_URL:-https://localhost}
+      INGEST_DOMAIN: ${INGEST_DOMAIN:-localhost}
+      INGEST_PORT: ${INGEST_PORT:-31415}
+      KEYCLOAK_URL: ${KEYCLOAK_URL:-http://keycloak:8080}
+      KEYCLOAK_REALM: ${KEYCLOAK_REALM:-sekant}
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
+      KEYCLOAK_ADMIN_EMAIL: ${KEYCLOAK_ADMIN_EMAIL:-admin@sekant.local}
+      KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:-backend}
+      KEYCLOAK_CLIENT_SECRET_FILE: /run/secrets/keycloak_client_secret
+      KEYCLOAK_FRONTEND_CLIENT_ID: ${KEYCLOAK_FRONTEND_CLIENT_ID:-frontend}
+      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DB: ${POSTGRES_DB:-sekant}
+      POSTGRES_USER: ${POSTGRES_USER:-sekant}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      CLICKHOUSE_URL: ${CLICKHOUSE_URL:-http://clickhouse:8123}
+      CLICKHOUSE_STORAGE_POLICY: ${CLICKHOUSE_STORAGE_POLICY:-}
+      CLICKHOUSE_RETENTION_DAYS: ${CLICKHOUSE_RETENTION_DAYS:-700}
+      CH_APP_ADMIN_USER: ${CH_APP_ADMIN_USER:-ch_app_admin}
+      CH_APP_ADMIN_PASSWORD_FILE: /run/secrets/ch_app_admin_password
+      CH_USER_ENCRYPTION_KEY_FILE: /run/secrets/ch_user_encryption_key
+      SQLVALIDATOR_URL: ${SQLVALIDATOR_URL:-http://sql-validator:8001}
+      JWT_COOKIE_SECURE: ${JWT_COOKIE_SECURE:-true}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
+      GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
+      MICROSOFT_OAUTH_TENANT_ID: ${MICROSOFT_OAUTH_TENANT_ID:-common}
+      MICROSOFT_OAUTH_CLIENT_ID: ${MICROSOFT_OAUTH_CLIENT_ID:-}
+      MICROSOFT_OAUTH_CLIENT_SECRET: ${MICROSOFT_OAUTH_CLIENT_SECRET:-}
+      OKTA_OIDC_ISSUER: ${OKTA_OIDC_ISSUER:-}
+      OKTA_OAUTH_CLIENT_ID: ${OKTA_OAUTH_CLIENT_ID:-}
+      OKTA_OAUTH_CLIENT_SECRET: ${OKTA_OAUTH_CLIENT_SECRET:-}
+    expose:
+      - "4000"
+    depends_on:
+      init-secrets:
+        condition: service_healthy
+      keycloak:
+        condition: service_started
+      clickhouse:
+        condition: service_started
+      postgres:
+        condition: service_started
+      redis:
+        condition: service_started
+      sql-validator:
+        condition: service_started
+    volumes:
+      - sekant_secrets:/run/secrets
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"const http = require('http'); const req = http.request('http://127.0.0.1:4000/health', { timeout: 2000 }, (res) => { process.exit(res.statusCode === 200 ? 0 : 1); }); req.on('error', () => process.exit(1)); req.end();\""]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    networks:
+      - sekant-net
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:23.0
+    container_name: sekant-keycloak
+    restart: unless-stopped
+    environment:
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
+      PUBLIC_URL: ${PUBLIC_URL:-https://localhost}
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: ${POSTGRES_USER:-sekant}
+      KC_HOSTNAME_STRICT: "false"
+      KC_PROXY: edge
+      QUARKUS_HTTP_PROXY_ALLOW_X_FORWARDED: "true"
+      QUARKUS_HTTP_PROXY_ALLOW_FORWARDED: "false"
+    entrypoint: ["/bin/sh", "-c", "export KC_DB_PASSWORD=$$(cat /opt/keycloak/data/import/postgres_password) && export KEYCLOAK_ADMIN_PASSWORD=$$(cat /opt/keycloak/data/import/keycloak_admin_password) && export PUBLIC_URL=$${PUBLIC_URL:-https://localhost} && export PUBLIC_URL=$${PUBLIC_URL%,} && exec /opt/keycloak/bin/kc.sh start-dev --import-realm --proxy=edge --hostname-url=$${PUBLIC_URL} --hostname-strict=false"]
+    expose:
+      - "8080"
+    volumes:
+      - sekant_secrets:/opt/keycloak/data/import:ro
+    depends_on:
+      init-secrets:
+        condition: service_healthy
+      postgres:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 1 bash -c 'cat < /dev/null > /dev/tcp/127.0.0.1/8080' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 180s
+    networks:
+      - sekant-net
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    container_name: sekant-clickhouse
+    restart: unless-stopped
+    expose:
+      - "8123"
+      - "9000"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./clickhouse/config.xml:/etc/clickhouse-server/config.d/config.xml:ro
+      - ./clickhouse/config.d/storage.xml:/etc/clickhouse-server/config.d/storage.xml:ro
+      - ${CLICKHOUSE_INIT_SQL:-./clickhouse/init.sql}:/tmp/init.sql.src:ro
+      - sekant_secrets:/run/secrets:ro
+    environment:
+      CLICKHOUSE_S3_ENDPOINT: ${CLICKHOUSE_S3_ENDPOINT:-}
+      CLICKHOUSE_S3_ACCESS_KEY_ID: ${CLICKHOUSE_S3_ACCESS_KEY_ID:-}
+      CLICKHOUSE_S3_SECRET_ACCESS_KEY: ${CLICKHOUSE_S3_SECRET_ACCESS_KEY:-}
+      CLICKHOUSE_S3_REGION: ${CLICKHOUSE_S3_REGION:-}
+      CLICKHOUSE_STORAGE_POLICY: ${CLICKHOUSE_STORAGE_POLICY:-}
+    entrypoint: 
+      - "/bin/sh"
+      - "-c"
+      - |
+        cp /run/secrets/users.xml /etc/clickhouse-server/users.d/users.xml
+        chmod 444 /etc/clickhouse-server/users.d/users.xml
+        # Prepare init.sql in the standard init directory
+        mkdir -p /docker-entrypoint-initdb.d
+        cp /tmp/init.sql.src /docker-entrypoint-initdb.d/init.sql
+        if [ -n "$$CLICKHOUSE_STORAGE_POLICY" ]; then
+          sed -i "s/SETTINGS /SETTINGS storage_policy = '$$CLICKHOUSE_STORAGE_POLICY', /g" /docker-entrypoint-initdb.d/init.sql
+        fi
+        exec /entrypoint.sh
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client -q 'SELECT 1' > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    networks:
+      - sekant-net
+    depends_on:
+      init-secrets:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: sekant-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: sekant
+      POSTGRES_USER: ${POSTGRES_USER:-sekant}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    expose:
+      - "5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres:/docker-entrypoint-initdb.d:ro
+      - sekant_secrets:/run/secrets:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sekant}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    networks:
+      - sekant-net
+    depends_on:
+      init-secrets:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    container_name: sekant-redis
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    expose:
+      - "6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    networks:
+      - sekant-net
+
+  sql-validator:
+    image: ${SEKANT_IMAGE_REPO:-sekantsec/management-console}:sql-validator-${SEKANT_IMAGE_TAG:-latest}
+    container_name: sekant-sql-validator
+    restart: unless-stopped
+    environment:
+      ALLOWED_TABLES: ${SQLVALIDATOR_ALLOWED_TABLES:-security_events,sekant.security_events}
+      MAX_LIMIT: ${SQLVALIDATOR_MAX_LIMIT:-10000}
+    expose:
+      - "8001"
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=2)\" || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - sekant-net
+
+  fluent-bit:
+    image: fluent/fluent-bit:latest
+    container_name: sekant-fluent-bit
+    restart: unless-stopped
+    entrypoint: ["/fluent-bit/bin/fluent-bit", "-c", "/run/secrets/fluent-bit.conf"]
+    depends_on:
+      init-secrets:
+        condition: service_healthy
+      clickhouse:
+        condition: service_started
+    volumes:
+      - sekant_secrets:/run/secrets:ro
+    healthcheck:
+      test: ["CMD", "/fluent-bit/bin/fluent-bit", "--dry-run", "-c", "/run/secrets/fluent-bit.conf"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - sekant-net
+
+  readiness:
+    image: alpine:latest
+    container_name: sekant-readiness
+    restart: unless-stopped
+    depends_on:
+      - caddy
+      - nginx
+      - backend
+      - frontend
+      - keycloak
+      - clickhouse
+      - postgres
+      - redis
+      - sql-validator
+      - fluent-bit
+    command: ["/bin/sh", "-c", "echo ready >/tmp/status && echo 'Sekant Platform is READY!' && tail -f /dev/null"]
+    healthcheck:
+      test: ["CMD-SHELL", "grep -q '^ready$' /tmp/status"]
+      interval: 5s
+      timeout: 2s
+      retries: 5
+    networks:
+      - sekant-net
