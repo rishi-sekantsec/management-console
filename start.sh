@@ -121,7 +121,7 @@ if [[ "${BASH_SOURCE[0]}" != *"start.sh.new" ]]; then
   if [[ -f "$new_script" && -z "${SEKANT_NO_CHAIN_TO_NEW:-}" ]]; then
     v_new="$(script_file_version "$new_script")"
     v_cur="$(script_file_version "${root_dir}/start.sh")"
-    if [[ -z "$v_cur" || -z "$v_new" || semver_gt "$v_new" "$v_cur" ]]; then
+    if [[ -z "$v_cur" || -z "$v_new" ]] || semver_gt "$v_new" "$v_cur"; then
       exec "$new_script" "$@"
     fi
   fi
