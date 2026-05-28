@@ -5,7 +5,7 @@
 Run this in an empty folder (the `.` at the end clones into the current directory):
 
 ```bash
-git clone --branch 1.1.2 --depth 1 https://github.com/rishi-sekantsec/management-console .
+git clone --branch 1.1.4 --depth 1 https://github.com/sekantsec/management-console .
 ```
 
 ## 2) Start the installer
@@ -25,6 +25,83 @@ bash start.sh
 - Database setup: local or remote
 - Data retention days (default: 700)
 - If remote DB: S3 endpoint base, S3 bucket, optional prefix, optional region, access key id, secret access key
+
+## 4) Update / Upgrade
+
+Sekant upgrades usually involve two separate things:
+
+- Updating the distribution files (this folder): `start.sh`, `docker-compose.yml`, and config/init files.
+- Running newer Docker images (controlled by `.env` via `SEKANT_IMAGE_REPO` and `SEKANT_IMAGE_TAG`).
+
+### A) Update the distribution files (recommended first)
+
+```bash
+bash start.sh --update
+```
+
+What this does:
+
+- Checks GitHub for the latest available version tag.
+- Downloads updated distribution files into this folder.
+- Re-runs `start.sh` automatically with the updated script.
+
+If the GitHub repo is private, you must authenticate (otherwise GitHub returns `404 Not Found`):
+
+```bash
+GITHUB_TOKEN=<your_token> bash start.sh --update
+```
+
+If you host the distribution in a different GitHub repo, override it:
+
+```bash
+SEKANT_GITHUB_OWNER=<owner> SEKANT_GITHUB_REPO=<repo> bash start.sh --update
+```
+
+### B) Upgrade to new images (typical version upgrade)
+
+1) Update `.env` to select the new image tag (or keep `latest`):
+
+- `SEKANT_IMAGE_REPO` (example: `sekantsec/management-console`)
+- `SEKANT_IMAGE_TAG` (example: `1.2.3` or `latest`)
+
+2) Run an upgrade start:
+
+```bash
+bash start.sh --upgrade
+```
+
+Or do it in one step (recommended):
+
+```bash
+bash start.sh --update --upgrade
+```
+
+Upgrade behavior (what to expect):
+
+- Stops existing containers without deleting volumes (data and generated secrets are preserved).
+- Reuses existing `.env` values by default, so it does not ask for hostname/admin email/database again.
+- If a new version introduces new required configuration, `start.sh` prints an actionable error telling you what to set (often via `--reconfigure`).
+
+## 5) Reconfigure (change setup values without wiping data)
+
+Use reconfigure when you want to change setup inputs (hostname/ports/admin email/database mode), but keep the existing data and secrets.
+
+```bash
+bash start.sh --reconfigure
+```
+
+What reconfigure does:
+
+- Forces the interactive prompts again and rewrites the relevant `.env` keys.
+- Keeps existing Docker volumes by default (your database data and generated secrets remain intact).
+
+Important notes:
+
+- On an existing deployment, changing the “seeded admin password” in `.env` may not retroactively change the already-created admin user in Keycloak. Use the UI/admin flow to reset the password if needed.
+- If you truly need a clean install (destructive), remove the existing Sekant volumes for your compose project (example for project `sekant`):
+  - `sekant_sekant_secrets`
+  - `sekant_clickhouse_data`
+  - `sekant_postgres_data`
 
 # How To Use Features
 

@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.1.2"
+SEKANT_DASHBOARD_VERSION="1.1.4"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -57,8 +57,8 @@ compose_up_args=()
 local_mode=0
 use_remote_images=0
 update_self=0
-github_owner="rishi-sekantsec"
-github_repo="management-console"
+github_owner="${SEKANT_GITHUB_OWNER:-rishi-sekantsec}"
+github_repo="${SEKANT_GITHUB_REPO:-management-console}"
 
 nginx_conf_path="${root_dir}/nginx/nginx.conf"
 
@@ -78,6 +78,47 @@ http_get_to_file() {
     wget -q -O "$out" "$url"
     return $?
   fi
+  return 127
+}
+
+github_last_api_url=""
+github_last_api_status=""
+github_last_api_message=""
+github_candidate_tag=""
+github_latest_tag_value=""
+
+github_api_get_to_file() {
+  local url="$1"
+  local out="$2"
+  github_last_api_url="$url"
+  github_last_api_status=""
+  github_last_api_message=""
+
+  if command -v curl >/dev/null 2>&1; then
+    local status
+    if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+      status="$(curl -sSL -H "Authorization: Bearer ${GITHUB_TOKEN}" -H "X-GitHub-Api-Version: 2022-11-28" -o "$out" -w "%{http_code}" "$url" || true)"
+    else
+      status="$(curl -sSL -o "$out" -w "%{http_code}" "$url" || true)"
+    fi
+    github_last_api_status="$status"
+    if [[ "$status" != "200" ]]; then
+      github_last_api_message="$(grep -oE '"message"[[:space:]]*:[[:space:]]*"[^"]+"' "$out" | head -n 1 | sed -E 's/.*"message"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/' || true)"
+      return 1
+    fi
+    return 0
+  fi
+
+  if command -v wget >/dev/null 2>&1; then
+    if wget -q -O "$out" "$url"; then
+      github_last_api_status="200"
+      return 0
+    fi
+    github_last_api_status="0"
+    return 1
+  fi
+
+  github_last_api_status="0"
   return 127
 }
 
@@ -129,11 +170,27 @@ if [[ "${BASH_SOURCE[0]}" != *"start.sh.new" ]]; then
   fi
 fi
 
-github_latest_tag() {
+tag_semver() {
+  local tag="$1"
+  tag="$(printf "%s" "${tag:-}" | tr -d ' \t\r\n')"
+  tag="${tag#refs/tags/}"
+  if [[ "$tag" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    printf "%s" "$(normalize_version "$tag")"
+    return 0
+  fi
+  if [[ "$tag" =~ (v?[0-9]+\.[0-9]+\.[0-9]+) ]]; then
+    printf "%s" "$(normalize_version "${BASH_REMATCH[1]}")"
+    return 0
+  fi
+  printf "%s" ""
+  return 0
+}
+
+github_latest_release_tag() {
   local api_url tmp tag
   api_url="https://api.github.com/repos/${github_owner}/${github_repo}/releases/latest"
   tmp="$(mktemp)"
-  if ! http_get_to_file "$api_url" "$tmp" >/dev/null 2>&1; then
+  if ! github_api_get_to_file "$api_url" "$tmp" >/dev/null 2>&1; then
     rm -f "$tmp" >/dev/null 2>&1 || true
     return 1
   fi
@@ -142,8 +199,98 @@ github_latest_tag() {
   if [[ -z "$tag" ]]; then
     return 1
   fi
-  printf "%s" "$tag"
+  github_candidate_tag="$tag"
   return 0
+}
+
+github_highest_semver_tag() {
+  local page=1
+  local pages_left=5
+  local best_tag=""
+  local best_semver=""
+
+  while (( pages_left > 0 )); do
+    local api_url tmp body_tag
+    api_url="https://api.github.com/repos/${github_owner}/${github_repo}/tags?per_page=100&page=${page}"
+    tmp="$(mktemp)"
+    if ! github_api_get_to_file "$api_url" "$tmp" >/dev/null 2>&1; then
+      rm -f "$tmp" >/dev/null 2>&1 || true
+      break
+    fi
+
+    if grep -qE '^[[:space:]]*\[[[:space:]]*\][[:space:]]*$' "$tmp"; then
+      rm -f "$tmp" >/dev/null 2>&1 || true
+      break
+    fi
+
+    while IFS= read -r body_tag; do
+      [[ -z "$body_tag" ]] && continue
+      local semver
+      semver="$(tag_semver "$body_tag")"
+      [[ -z "$semver" ]] && continue
+      if [[ -z "$best_semver" ]] || semver_gt "$semver" "$best_semver"; then
+        best_semver="$semver"
+        best_tag="$body_tag"
+      fi
+    done < <(sed -nE 's/.*"name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' "$tmp")
+
+    rm -f "$tmp" >/dev/null 2>&1 || true
+
+    page=$(( page + 1 ))
+    pages_left=$(( pages_left - 1 ))
+  done
+
+  if [[ -z "$best_tag" ]]; then
+    return 1
+  fi
+  github_candidate_tag="$best_tag"
+  return 0
+}
+
+github_highest_semver_tag_via_git() {
+  if ! command -v git >/dev/null 2>&1; then
+    return 1
+  fi
+
+  local repo_url="https://github.com/${github_owner}/${github_repo}.git"
+  local best_tag=""
+  local best_semver=""
+  local line ref tag semver
+
+  while IFS= read -r line; do
+    ref="${line##*$'\t'}"
+    tag="${ref#refs/tags/}"
+    semver="$(tag_semver "$tag")"
+    [[ -z "$semver" ]] && continue
+    if [[ -z "$best_semver" ]] || semver_gt "$semver" "$best_semver"; then
+      best_semver="$semver"
+      best_tag="$tag"
+    fi
+  done < <(GIT_TERMINAL_PROMPT=0 git ls-remote --tags --refs "$repo_url" 2>/dev/null || true)
+
+  if [[ -z "$best_tag" ]]; then
+    return 1
+  fi
+  github_candidate_tag="$best_tag"
+  return 0
+}
+
+github_latest_tag() {
+  github_latest_tag_value=""
+  github_candidate_tag=""
+  if github_latest_release_tag; then
+    github_latest_tag_value="$github_candidate_tag"
+    return 0
+  fi
+  if github_highest_semver_tag; then
+    github_latest_tag_value="$github_candidate_tag"
+    return 0
+  fi
+  if github_highest_semver_tag_via_git; then
+    github_latest_tag_value="$github_candidate_tag"
+    return 0
+  fi
+  return 1
 }
 
 detect_repo_prefix() {
@@ -218,11 +365,17 @@ apply_update_from_github() {
 
 check_for_github_update() {
   local latest_tag latest current
-  latest_tag="$(github_latest_tag || true)"
-  if [[ -z "$latest_tag" ]]; then
+  latest_tag=""
+  if github_latest_tag; then
+    latest_tag="$github_latest_tag_value"
+  fi
+  if [[ -z "${latest_tag:-}" ]]; then
     return 0
   fi
-  latest="$(normalize_version "$latest_tag")"
+  latest="$(tag_semver "$latest_tag")"
+  if [[ -z "$latest" ]]; then
+    latest="$(normalize_version "$latest_tag")"
+  fi
   current="$(normalize_version "${SEKANT_DASHBOARD_VERSION:-}")"
 
   if [[ -z "$current" ]]; then
@@ -502,9 +655,26 @@ fi
 check_for_github_update || true
 
 if (( update_self == 1 )); then
-  latest_tag="$(github_latest_tag || true)"
+  latest_tag=""
+  if github_latest_tag; then
+    latest_tag="$github_latest_tag_value"
+  fi
   if [[ -z "$latest_tag" ]]; then
-    echo -e "${CYAN}${BOLD}Error:${RESET} Could not determine the latest version from GitHub." >&2
+    echo -e "${CYAN}${BOLD}Error:${RESET} Could not determine the latest version tag from GitHub." >&2
+    if [[ -n "${github_last_api_url:-}" ]]; then
+      if [[ -n "${github_last_api_status:-}" && "${github_last_api_status:-}" != "0" ]]; then
+        echo "GitHub API request: ${github_last_api_url} (HTTP ${github_last_api_status})" >&2
+      else
+        echo "GitHub API request: ${github_last_api_url}" >&2
+      fi
+    fi
+    if [[ -n "${github_last_api_message:-}" ]]; then
+      echo "GitHub API message: ${github_last_api_message}" >&2
+    fi
+    if [[ -z "${GITHUB_TOKEN:-}" ]]; then
+      echo "If the repo is private, set GITHUB_TOKEN and re-run." >&2
+    fi
+    echo "Override repo via: SEKANT_GITHUB_OWNER / SEKANT_GITHUB_REPO" >&2
     exit 1
   fi
   if (( quiet == 0 )); then
@@ -1060,7 +1230,6 @@ check_for_upgrade_notice() {
 check_for_upgrade_notice || true
 
 detect_existing_compose_project() {
-  local suffix_clickhouse="_clickhouse_data"
   local suffix_secrets="_sekant_secrets"
   local prefix=""
   local matches=()
@@ -1068,11 +1237,9 @@ detect_existing_compose_project() {
   while IFS= read -r volume_name; do
     [[ -z "$volume_name" ]] && continue
     case "$volume_name" in
-      *"${suffix_clickhouse}")
-        prefix="${volume_name%$suffix_clickhouse}"
-        if docker volume inspect "${prefix}${suffix_secrets}" >/dev/null 2>&1; then
-          matches+=("$prefix")
-        fi
+      *"${suffix_secrets}")
+        prefix="${volume_name%$suffix_secrets}"
+        matches+=("$prefix")
         ;;
     esac
   done < <(docker volume ls --format '{{.Name}}')
@@ -1497,8 +1664,19 @@ if [[ -z "${DOCKER_DEFAULT_PLATFORM:-}" && "$host_os" == "Darwin" && ( "$host_ar
   fi
 fi
 
-existing_compose_project="sekant"
-write_env_value "COMPOSE_PROJECT_NAME" "$existing_compose_project"
+existing_compose_project="$(trim_whitespace "$(read_env_value "COMPOSE_PROJECT_NAME")")"
+if [[ -z "$existing_compose_project" ]]; then
+  existing_compose_project="$(detect_running_compose_project 2>/dev/null || true)"
+fi
+if [[ -z "$existing_compose_project" ]]; then
+  existing_compose_project="$(detect_existing_compose_project 2>/dev/null || true)"
+fi
+existing_compose_project="${existing_compose_project:-sekant}"
+
+compose_project_current="$(trim_whitespace "$(read_env_value "COMPOSE_PROJECT_NAME")")"
+if [[ -z "$compose_project_current" ]]; then
+  write_env_value "COMPOSE_PROJECT_NAME" "$existing_compose_project"
+fi
 
 secrets_volume_name="${existing_compose_project}_sekant_secrets"
 clickhouse_volume_name="${existing_compose_project}_clickhouse_data"
@@ -1604,14 +1782,14 @@ ingest_protocol="https"
 clickhouse_retention_days="$clickhouse_retention_days_default"
 
 can_reuse_env=0
-if (( has_existing_volumes == 1 && force_reconfigure == 0 )); then
+if (( force_reconfigure == 0 )); then
   seed_admin_email_probe="$(trim_whitespace "$(read_env_value "KEYCLOAK_ADMIN_EMAIL")")"
   if [[ -n "$seed_admin_email_probe" ]]; then
     can_reuse_env=1
   fi
 fi
 
-if (( has_existing_volumes == 1 && force_reconfigure == 0 && can_reuse_env == 1 )); then
+if (( force_reconfigure == 0 && can_reuse_env == 1 )); then
   echo -e "${CYAN}${BOLD}Reusing existing setup values from .env (use --reconfigure to change).${RESET}"
   public_hostname="$(normalize_hostname "$(read_env_value "CADDY_DOMAIN")")"
   if [[ -z "$public_hostname" ]]; then
