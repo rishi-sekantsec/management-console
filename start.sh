@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.1.0"
+SEKANT_DASHBOARD_VERSION="1.1.1"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -1481,35 +1481,7 @@ if [[ -z "${DOCKER_DEFAULT_PLATFORM:-}" && "$host_os" == "Darwin" && ( "$host_ar
   fi
 fi
 
-existing_compose_project="$(read_env_value "COMPOSE_PROJECT_NAME")"
-if [[ -z "$existing_compose_project" ]]; then
-  set +e
-  detected_compose_project="$(detect_running_compose_project)"
-  detect_status=$?
-  set -e
-  if (( detect_status == 0 )); then
-    existing_compose_project="$detected_compose_project"
-  else
-    set +e
-    detected_compose_project="$(detect_existing_compose_project)"
-    detect_status=$?
-    set -e
-    if (( detect_status == 0 )); then
-      existing_compose_project="$detected_compose_project"
-    elif (( detect_status == 2 )); then
-      exit 1
-    fi
-  fi
-fi
-if [[ -z "$existing_compose_project" ]]; then
-  existing_compose_project="$(basename "$root_dir")"
-fi
-
-raw_compose_project="$existing_compose_project"
-existing_compose_project="$(sanitize_compose_project_name "$existing_compose_project")"
-if [[ "$existing_compose_project" != "$raw_compose_project" && $quiet -eq 0 ]]; then
-  echo -e "${CYAN}${BOLD}Notice:${RESET} Adjusted COMPOSE_PROJECT_NAME to be Docker Compose compatible: ${existing_compose_project}" >&2
-fi
+existing_compose_project="sekant"
 write_env_value "COMPOSE_PROJECT_NAME" "$existing_compose_project"
 
 secrets_volume_name="${existing_compose_project}_sekant_secrets"
