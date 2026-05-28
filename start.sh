@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.1.4"
+SEKANT_DASHBOARD_VERSION="1.1.5"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -54,9 +54,6 @@ verbose=0
 quiet=0
 upgrade_log_file=""
 compose_up_args=()
-local_mode=0
-use_remote_images=0
-update_self=0
 github_owner="${SEKANT_GITHUB_OWNER:-rishi-sekantsec}"
 github_repo="${SEKANT_GITHUB_REPO:-management-console}"
 
@@ -380,7 +377,7 @@ check_for_github_update() {
 
   if [[ -z "$current" ]]; then
     if (( quiet == 0 )); then
-      echo -e "${CYAN}${BOLD}Notice:${RESET} Latest available version is ${latest} (run ./start.sh --update to update files)."
+      echo -e "${CYAN}${BOLD}Notice:${RESET} Latest available version is ${latest} (run ./start.sh --upgrade to upgrade)."
     fi
     return 0
   fi
@@ -388,7 +385,7 @@ check_for_github_update() {
   if semver_gt "$latest" "$current"; then
     if (( quiet == 0 )); then
       echo -e "${CYAN}${BOLD}Update available:${RESET} v${current} -> v${latest}"
-      echo "Run ./start.sh --update to download the latest distribution files from GitHub."
+      echo "Run ./start.sh --upgrade to upgrade to the latest version."
       echo "Docker images are available at: https://hub.docker.com/r/sekantsec/management-console"
       echo "Distribution sources: https://github.com/${github_owner}/${github_repo}"
     fi
@@ -612,19 +609,93 @@ if [[ -f "${root_dir}/backend/Dockerfile" && -f "${root_dir}/frontend/Dockerfile
   is_repo_checkout=1
 fi
 
+select_yes_no_upgrade() {
+  local prompt="${1:-Upgrade to the newer version?}"
+  local default="${2:-no}"
+  local options=("Yes" "No")
+  local values=("yes" "no")
+  local selected=1
+  local key=""
+  local escape_tail=""
+  local option_count="${#options[@]}"
+
+  if [[ "$default" == "yes" ]]; then
+    selected=0
+  fi
+
+  if [[ ! -t 0 || ! -t 2 ]]; then
+    local answer=""
+    while true; do
+      read -r -p "${prompt} [yes/no] (default: ${default}): " answer
+      answer="$(printf "%s" "$answer" | tr '[:upper:]' '[:lower:]')"
+      answer="$(printf "%s" "$answer" | tr -d ' \t\r\n')"
+      if [[ -z "$answer" ]]; then
+        printf "%s" "$default"
+        return 0
+      fi
+      if [[ "$answer" == "y" || "$answer" == "yes" ]]; then
+        printf "yes"
+        return 0
+      fi
+      if [[ "$answer" == "n" || "$answer" == "no" ]]; then
+        printf "no"
+        return 0
+      fi
+      echo "Please enter 'yes' or 'no'." >&2
+    done
+  fi
+
+  printf "\033[?25l" >&2
+  trap 'printf "\033[?25h" >&2' RETURN
+
+  printf "%s${DIM} (use arrow keys and Enter)${RESET}\n" "$prompt" >&2
+  while true; do
+    local idx
+    for idx in "${!options[@]}"; do
+      if (( idx == selected )); then
+        printf "${GREEN}${BOLD}  > %s${RESET}\n" "${options[idx]}" >&2
+      else
+        printf "${DIM}    %s${RESET}\n" "${options[idx]}" >&2
+      fi
+    done
+
+    IFS= read -r -s -n1 key
+    if [[ "$key" == $'\x1b' ]]; then
+      IFS= read -r -s -n2 escape_tail || true
+      key+="$escape_tail"
+      escape_tail=""
+    fi
+
+    case "$key" in
+      $'\x1b[A'|$'\x1bOA')
+        selected=$(( (selected + option_count - 1) % option_count ))
+        ;;
+      $'\x1b[B'|$'\x1bOB')
+        selected=$(( (selected + 1) % option_count ))
+        ;;
+      ""|$'\n')
+        printf "\033[%dA" "$option_count" >&2
+        for idx in "${!options[@]}"; do
+          printf "\r\033[K" >&2
+          if (( idx < option_count - 1 )); then
+            printf "\n" >&2
+          fi
+        done
+        printf "\033[%dA" $(( option_count - 1 )) >&2
+        printf "\r%s: %s\n" "$prompt" "${options[selected]}" >&2
+        printf "%s" "${values[selected]}"
+        return 0
+        ;;
+    esac
+
+    printf "\033[%dA" "$option_count" >&2
+  done
+}
+
 for arg in "$@"; do
   case "$arg" in
     --reconfigure)
       force_reconfigure=1
-      ;;
-    --update)
-      update_self=1
-      ;;
-    --local)
-      local_mode=1
-      ;;
-    --images)
-      use_remote_images=1
       ;;
     --upgrade|--ugrade)
       upgrade=1
@@ -641,10 +712,6 @@ for arg in "$@"; do
   esac
 done
 
-if (( is_repo_checkout == 1 && use_remote_images == 0 && local_mode == 0 )); then
-  local_mode=1
-fi
-
 if (( upgrade == 1 && verbose == 0 )); then
   quiet=1
 fi
@@ -652,58 +719,67 @@ if (( verbose == 1 )); then
   quiet=0
 fi
 
-check_for_github_update || true
+latest_tag=""
+latest_semver=""
+if github_latest_tag; then
+  latest_tag="$github_latest_tag_value"
+  latest_semver="$(tag_semver "$latest_tag")"
+  if [[ -z "$latest_semver" ]]; then
+    latest_semver="$(normalize_version "$latest_tag")"
+  fi
+fi
 
-if (( update_self == 1 )); then
-  latest_tag=""
-  if github_latest_tag; then
-    latest_tag="$github_latest_tag_value"
+current_semver="$(normalize_version "${SEKANT_DASHBOARD_VERSION:-}")"
+update_available=0
+if [[ -n "$latest_semver" && -n "$current_semver" ]] && semver_gt "$latest_semver" "$current_semver"; then
+  update_available=1
+fi
+
+if (( update_available == 1 )); then
+  if (( quiet == 0 )); then
+    echo -e "${CYAN}${BOLD}Update available:${RESET} v${current_semver} -> v${latest_semver}"
   fi
-  if [[ -z "$latest_tag" ]]; then
-    echo -e "${CYAN}${BOLD}Error:${RESET} Could not determine the latest version tag from GitHub." >&2
-    if [[ -n "${github_last_api_url:-}" ]]; then
-      if [[ -n "${github_last_api_status:-}" && "${github_last_api_status:-}" != "0" ]]; then
-        echo "GitHub API request: ${github_last_api_url} (HTTP ${github_last_api_status})" >&2
-      else
-        echo "GitHub API request: ${github_last_api_url}" >&2
+
+  do_upgrade="no"
+  if (( upgrade == 1 )); then
+    do_upgrade="yes"
+  else
+    do_upgrade="$(select_yes_no_upgrade "Upgrade to v${latest_semver} now?" "no")"
+  fi
+
+  if [[ "$do_upgrade" == "yes" ]]; then
+    if (( quiet == 0 )); then
+      echo -e "${CYAN}${BOLD}Updating:${RESET} Downloading distribution files for ${latest_tag}..."
+    fi
+    if ! apply_update_from_github "$latest_tag"; then
+      echo -e "${CYAN}${BOLD}Error:${RESET} Update failed." >&2
+      exit 1
+    fi
+
+    new_args=()
+    for arg in "$@"; do
+      if [[ "$arg" == "--upgrade" || "$arg" == "--ugrade" ]]; then
+        continue
       fi
+      new_args+=("$arg")
+    done
+    new_args=(--upgrade "${new_args[@]+"${new_args[@]}"}")
+
+    updated_script="${root_dir}/start.sh.new"
+    if [[ -f "$updated_script" ]]; then
+      chmod +x "$updated_script" >/dev/null 2>&1 || true
+      if mv "$updated_script" "${root_dir}/start.sh" >/dev/null 2>&1; then
+        chmod +x "${root_dir}/start.sh" >/dev/null 2>&1 || true
+        SEKANT_FORCE_IMAGE_TAG="${latest_semver}" exec "${root_dir}/start.sh" "${new_args[@]+"${new_args[@]}"}"
+      fi
+      SEKANT_FORCE_IMAGE_TAG="${latest_semver}" exec "$updated_script" "${new_args[@]+"${new_args[@]}"}"
     fi
-    if [[ -n "${github_last_api_message:-}" ]]; then
-      echo "GitHub API message: ${github_last_api_message}" >&2
-    fi
-    if [[ -z "${GITHUB_TOKEN:-}" ]]; then
-      echo "If the repo is private, set GITHUB_TOKEN and re-run." >&2
-    fi
-    echo "Override repo via: SEKANT_GITHUB_OWNER / SEKANT_GITHUB_REPO" >&2
-    exit 1
+    SEKANT_FORCE_IMAGE_TAG="${latest_semver}" exec "${root_dir}/start.sh" "${new_args[@]+"${new_args[@]}"}"
   fi
-  if (( quiet == 0 )); then
-    echo -e "${CYAN}${BOLD}Updating:${RESET} Downloading distribution files for ${latest_tag}..."
+else
+  if (( upgrade == 1 && quiet == 0 )); then
+    echo -e "${CYAN}${BOLD}No update available:${RESET} continuing with current version v${current_semver}"
   fi
-  if ! apply_update_from_github "$latest_tag"; then
-    echo -e "${CYAN}${BOLD}Error:${RESET} Update failed." >&2
-    exit 1
-  fi
-  if (( quiet == 0 )); then
-    echo -e "${CYAN}${BOLD}Updated:${RESET} Re-running with the updated start.sh..."
-  fi
-  new_args=()
-  for arg in "$@"; do
-    if [[ "$arg" == "--update" ]]; then
-      continue
-    fi
-    new_args+=("$arg")
-  done
-  updated_script="${root_dir}/start.sh.new"
-  if [[ -f "$updated_script" ]]; then
-    chmod +x "$updated_script" >/dev/null 2>&1 || true
-    if mv "$updated_script" "${root_dir}/start.sh" >/dev/null 2>&1; then
-      chmod +x "${root_dir}/start.sh" >/dev/null 2>&1 || true
-      exec "${root_dir}/start.sh" "${new_args[@]+"${new_args[@]}"}"
-    fi
-    exec "$updated_script" "${new_args[@]+"${new_args[@]}"}"
-  fi
-  exec "${root_dir}/start.sh" "${new_args[@]+"${new_args[@]}"}"
 fi
 
 if (( quiet == 1 )); then
@@ -720,49 +796,6 @@ run_cmd() {
 
 compose_override_file=""
 compose_file_args=("-f" "${root_dir}/docker-compose.yml")
-
-if (( local_mode == 1 )); then
-  if (( is_repo_checkout == 0 )); then
-    echo -e "${CYAN}${BOLD}Error:${RESET} --local requires running start.sh from a source checkout (backend/frontend/init-secrets Dockerfiles)." >&2
-    exit 1
-  fi
-
-  compose_override_file="$(mktemp)"
-  cat > "${compose_override_file}" <<'EOF'
-services:
-  backend:
-    image: sekant-local/backend:${SEKANT_IMAGE_TAG:-dev}
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-      args:
-        DASHBOARD_VERSION: ${SEKANT_IMAGE_TAG:-dev}
-  frontend:
-    image: sekant-local/frontend:${SEKANT_IMAGE_TAG:-dev}
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-      args:
-        DASHBOARD_VERSION: ${SEKANT_IMAGE_TAG:-dev}
-  nginx:
-    image: sekant-local/nginx:${SEKANT_IMAGE_TAG:-dev}
-    build:
-      context: ./nginx
-      dockerfile: Dockerfile
-  sql-validator:
-    image: sekant-local/sql-validator:${SEKANT_IMAGE_TAG:-dev}
-    build:
-      context: ./sql-validator
-      dockerfile: Dockerfile
-  init-secrets:
-    image: sekant-local/init-secrets:${SEKANT_IMAGE_TAG:-dev}
-    build:
-      context: .
-      dockerfile: init-secrets/Dockerfile
-EOF
-  compose_file_args+=("-f" "${compose_override_file}")
-  trap 'rm -f "${compose_override_file}" 2>/dev/null || true' EXIT
-fi
 
 run_compose() {
   run_cmd "${compose_cmd[@]}" "${compose_file_args[@]}" "$@"
@@ -1111,6 +1144,10 @@ ensure_image_config() {
   local tag_default="latest"
   if [[ -n "${SEKANT_DASHBOARD_VERSION:-}" ]]; then
     tag_default="${SEKANT_DASHBOARD_VERSION}"
+  fi
+
+  if [[ -n "${SEKANT_FORCE_IMAGE_TAG:-}" ]]; then
+    write_env_value "SEKANT_IMAGE_TAG" "${SEKANT_FORCE_IMAGE_TAG}"
   fi
 
   local repo_current
@@ -1925,40 +1962,33 @@ if [[ "$sekant_image_repo" != */* ]]; then
     exit 1
   fi
 else
-  if (( local_mode == 1 )); then
-    if (( quiet == 0 )); then
-      echo "Local mode enabled: building images from local source (skipping pull)..." >&2
+  required_images=(
+    "${sekant_image_repo}:backend-${sekant_image_tag}"
+    "${sekant_image_repo}:frontend-${sekant_image_tag}"
+    "${sekant_image_repo}:nginx-${sekant_image_tag}"
+    "${sekant_image_repo}:sql-validator-${sekant_image_tag}"
+    "${init_secrets_image}"
+  )
+  missing_images=0
+  for image_name in "${required_images[@]}"; do
+    if ! docker image inspect "${image_name}" >/dev/null 2>&1; then
+      missing_images=1
+      break
     fi
-    run_compose build backend frontend nginx sql-validator init-secrets
-  else
-    required_images=(
-      "${sekant_image_repo}:backend-${sekant_image_tag}"
-      "${sekant_image_repo}:frontend-${sekant_image_tag}"
-      "${sekant_image_repo}:nginx-${sekant_image_tag}"
-      "${sekant_image_repo}:sql-validator-${sekant_image_tag}"
-      "${init_secrets_image}"
-    )
-    missing_images=0
-    for image_name in "${required_images[@]}"; do
-      if ! docker image inspect "${image_name}" >/dev/null 2>&1; then
-        missing_images=1
-        break
-      fi
-    done
+  done
 
-    if (( missing_images == 0 )); then
+  if (( missing_images == 0 )); then
+  if (( quiet == 0 )); then
+    echo "Using locally available Docker images for ${sekant_image_repo}:${sekant_image_tag} (skipping pull)..." >&2
+  fi
+  else
+    ensure_inline_docker_auth
     if (( quiet == 0 )); then
-      echo "Using locally available Docker images for ${sekant_image_repo}:${sekant_image_tag} (skipping pull)..." >&2
+      echo "Pulling Docker images from ${sekant_image_repo}..." >&2
     fi
-    else
-      ensure_inline_docker_auth
-      if (( quiet == 0 )); then
-        echo "Pulling Docker images from ${sekant_image_repo}..." >&2
-      fi
-      set +e
-      run_compose pull
-      set -e
-    fi
+    set +e
+    run_compose pull
+    set -e
   fi
 fi
 
@@ -1992,11 +2022,6 @@ else
 fi
 
 init_secrets_check_image="$init_secrets_image"
-if (( local_mode == 1 )); then
-  local_init_tag="$(trim_whitespace "$(read_env_value "SEKANT_IMAGE_TAG")")"
-  local_init_tag="${local_init_tag:-dev}"
-  init_secrets_check_image="sekant-local/init-secrets:${local_init_tag}"
-fi
 if ! docker run --rm "${init_secrets_check_image}" sh -c "grep -q \"Caddyfile prepared successfully\" /usr/local/bin/init-secrets.sh"; then
   echo -e "${CYAN}${BOLD}Error:${RESET} init-secrets image is missing the required upgrade logic." >&2
   echo "Update SEKANT_IMAGE_REPO / SEKANT_IMAGE_TAG (or SEKANT_INIT_SECRETS_IMAGE*) to a newer image, then re-run start.sh." >&2
