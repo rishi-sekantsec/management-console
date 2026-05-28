@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.1.7"
+SEKANT_DASHBOARD_VERSION="1.1.8"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -823,7 +823,7 @@ ensure_docker_config_no_desktop_helper() {
   local config_path="${docker_config_dir}/config.json"
 
   if [[ -f "${config_path}" ]] && grep -Eq '"credsStore"[[:space:]]*:|"credHelpers"[[:space:]]*:' "${config_path}"; then
-    if grep -Eqi '"credsStore"[[:space:]]*:[[:space:]]*"desktop"|"docker-credential-desktop"' "${config_path}"; then
+    if grep -Eqi '"credsStore"[[:space:]]*:[[:space:]]*"desktop(\.exe)?"|"docker-credential-desktop(\.exe)?"' "${config_path}"; then
       if command -v uname >/dev/null 2>&1; then
         if [[ "$(uname -s 2>/dev/null || true)" != "Linux" ]]; then
           return 0
@@ -839,7 +839,7 @@ EOF
       chmod 700 "${DOCKER_CONFIG}" 2>/dev/null || true
       chmod 600 "${DOCKER_CONFIG}/config.json" 2>/dev/null || true
       if (( quiet == 0 )); then
-        echo -e "${CYAN}${BOLD}Info:${RESET} Detected Docker Desktop credential helper config (credsStore/credHelpers=desktop)." >&2
+        echo -e "${CYAN}${BOLD}Info:${RESET} Detected Docker Desktop credential helper config (credsStore/credHelpers=desktop[.exe])." >&2
         echo "Using an isolated Docker config to avoid docker-credential-desktop.exe exec format errors in Linux shells." >&2
       fi
       return 0
