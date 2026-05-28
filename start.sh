@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.1.6"
+SEKANT_DASHBOARD_VERSION="1.1.7"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -818,46 +818,17 @@ load_distribution_images() {
   run_cmd bash "${root_dir}/load-images.sh"
 }
 
-ensure_inline_docker_auth() {
+ensure_docker_config_no_desktop_helper() {
   local docker_config_dir="${DOCKER_CONFIG:-${HOME}/.docker}"
   local config_path="${docker_config_dir}/config.json"
 
-  b64_encode() {
-    if command -v base64 >/dev/null 2>&1; then
-      base64 | tr -d '\r\n'
-      return 0
-    fi
-    if command -v openssl >/dev/null 2>&1; then
-      openssl base64 -A
-      return 0
-    fi
-    return 127
-  }
-
-  if [[ -n "${DOCKERHUB_USERNAME:-}" && -n "${DOCKERHUB_TOKEN:-}" ]]; then
-    local auth_b64
-    auth_b64="$(printf "%s" "${DOCKERHUB_USERNAME}:${DOCKERHUB_TOKEN}" | b64_encode || true)"
-    if [[ -z "${auth_b64}" ]]; then
-      echo -e "${CYAN}${BOLD}Error:${RESET} Unable to base64-encode DOCKERHUB_USERNAME/DOCKERHUB_TOKEN." >&2
-      exit 1
-    fi
-    mkdir -p "${root_dir}/.docker-auth"
-    export DOCKER_CONFIG="${root_dir}/.docker-auth"
-    cat > "${DOCKER_CONFIG}/config.json" <<EOF
-{
-  "auths": {
-    "https://index.docker.io/v1/": { "auth": "${auth_b64}" },
-    "https://registry-1.docker.io/v1/": { "auth": "${auth_b64}" }
-  }
-}
-EOF
-    chmod 700 "${DOCKER_CONFIG}" 2>/dev/null || true
-    chmod 600 "${DOCKER_CONFIG}/config.json" 2>/dev/null || true
-    return 0
-  fi
-
   if [[ -f "${config_path}" ]] && grep -Eq '"credsStore"[[:space:]]*:|"credHelpers"[[:space:]]*:' "${config_path}"; then
     if grep -Eqi '"credsStore"[[:space:]]*:[[:space:]]*"desktop"|"docker-credential-desktop"' "${config_path}"; then
+      if command -v uname >/dev/null 2>&1; then
+        if [[ "$(uname -s 2>/dev/null || true)" != "Linux" ]]; then
+          return 0
+        fi
+      fi
       mkdir -p "${root_dir}/.docker-no-credential-helper"
       export DOCKER_CONFIG="${root_dir}/.docker-no-credential-helper"
       cat > "${DOCKER_CONFIG}/config.json" <<'EOF'
@@ -870,12 +841,13 @@ EOF
       if (( quiet == 0 )); then
         echo -e "${CYAN}${BOLD}Info:${RESET} Detected Docker Desktop credential helper config (credsStore/credHelpers=desktop)." >&2
         echo "Using an isolated Docker config to avoid docker-credential-desktop.exe exec format errors in Linux shells." >&2
-        echo "If you hit Docker Hub rate limits or need private images, set DOCKERHUB_USERNAME + DOCKERHUB_TOKEN and re-run start.sh." >&2
       fi
       return 0
     fi
   fi
 }
+
+ensure_docker_config_no_desktop_helper || true
 
 if (( upgrade == 1 )); then
   load_distribution_images || true
@@ -1982,7 +1954,6 @@ else
     echo "Using locally available Docker images for ${sekant_image_repo}:${sekant_image_tag} (skipping pull)..." >&2
   fi
   else
-    ensure_inline_docker_auth
     if (( quiet == 0 )); then
       echo "Pulling Docker images from ${sekant_image_repo}..." >&2
     fi
