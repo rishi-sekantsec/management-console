@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.1.1"
+SEKANT_DASHBOARD_VERSION="1.1.2"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -29,7 +29,9 @@ cat << "EOF"
 EOF
 if [[ -n "${SEKANT_DASHBOARD_VERSION}" ]]; then
   echo
-  echo -e "${CYAN}${BOLD}Sekant Management Console Version ${SEKANT_DASHBOARD_VERSION}${RESET}"
+  echo -e "${CYAN}${BOLD}Sekant Management Console v${SEKANT_DASHBOARD_VERSION}${RESET}"
+  echo
+  echo -e "${GREEN}${BOLD}Starting Sekant Management Console Platform${RESET}"
   echo
 fi
 echo -e "${RESET}"
@@ -243,6 +245,8 @@ check_for_github_update() {
 write_postgres_init_sql() {
   mkdir -p "${root_dir}/postgres"
   cat > "${root_dir}/postgres/init.sql" <<'EOF'
+SET client_min_messages TO WARNING;
+
 SELECT 'CREATE DATABASE keycloak'
 WHERE NOT EXISTS (
   SELECT 1 FROM pg_database WHERE datname = 'keycloak'
@@ -417,8 +421,12 @@ CREATE TABLE IF NOT EXISTS system_settings (
 );
 
 INSERT INTO system_settings (key, value, updated_by)
-VALUES ('default_security_dashboard_cache_ttl_seconds', '300', 'system')
-ON CONFLICT (key) DO NOTHING;
+VALUES ('default_security_dashboard_cache_ttl_seconds', '63072000', 'system')
+ON CONFLICT (key) DO UPDATE
+SET value = EXCLUDED.value,
+    updated_at = NOW(),
+    updated_by = EXCLUDED.updated_by
+WHERE system_settings.value = '300';
 EOF
 }
 
@@ -432,6 +440,14 @@ fi
 if [[ ! -f "$postgres_init_path" ]]; then
   echo -e "${CYAN}${BOLD}Error:${RESET} postgres/init.sql is missing and could not be created." >&2
   exit 1
+fi
+if ! head -n 5 "$postgres_init_path" | grep -Eq '^[[:space:]]*SET[[:space:]]+client_min_messages[[:space:]]+TO[[:space:]]+WARNING[[:space:]]*;[[:space:]]*$'; then
+  tmp_init="${postgres_init_path}.tmp"
+  {
+    echo "SET client_min_messages TO WARNING;"
+    echo
+    cat "$postgres_init_path"
+  } > "$tmp_init" && mv "$tmp_init" "$postgres_init_path"
 fi
 has_superset_in_nginx_conf=0
 if [[ -f "$nginx_conf_path" ]] && grep -Eq '(^|[[:space:]])upstream[[:space:]]+superset([[:space:]]|\{)|proxy_pass[[:space:]]+https?://superset([:/[:space:]]|$)' "$nginx_conf_path"; then
@@ -1335,7 +1351,7 @@ select_clickhouse_mode() {
   printf "\033[?25l" >&2
   trap 'printf "\033[?25h" >&2' RETURN
 
-  printf "${CYAN}${BOLD}Select Database setup${RESET}${DIM} (use arrow keys and Enter)${RESET}\n" >&2
+  printf "Select Database setup${DIM} (use arrow keys and Enter)${RESET}\n" >&2
   while true; do
     local idx
     for idx in "${!options[@]}"; do
@@ -1369,7 +1385,7 @@ select_clickhouse_mode() {
           fi
         done
         printf "\033[%dA" $(( option_count - 1 )) >&2
-        printf "\r${CYAN}${BOLD}Database setup:${RESET} %s\n" "${options[selected]}" >&2
+        printf "\rDatabase setup: %s\n" "${options[selected]}" >&2
         printf "%s" "${values[selected]}"
         return 0
         ;;
@@ -1631,14 +1647,14 @@ else
 
   echo ""
   echo -e "${CYAN}${BOLD}Admin Credentials${RESET}"
-  seed_admin_email="$(prompt_email_required "admin email : ")"
   echo -e "Admin Username : ${seed_admin_username}"
+  seed_admin_email="$(prompt_email_required "Admin Email : ")"
   seed_admin_password="$(prompt_secret_with_default_text "Admin Password (default : ${seed_admin_password_default}) : " "$seed_admin_password_default")"
 
   echo ""
   echo -e "${CYAN}${BOLD}Database${RESET}"
   clickhouse_mode="$(select_clickhouse_mode)"
-  clickhouse_retention_days="$(prompt_retention_days_with_default_text "for how many days data to be retained (default: ${clickhouse_retention_days_default}) : " "$clickhouse_retention_days_default")"
+  clickhouse_retention_days="$(prompt_retention_days_with_default_text "Data Retention Duration (in days) (default: ${clickhouse_retention_days_default}) : " "$clickhouse_retention_days_default")"
 fi
 
 write_env_value "CADDY_DOMAIN" "$public_hostname"
@@ -1712,7 +1728,9 @@ if (( upgrade == 1 || has_existing_runtime == 1 )); then
   fi
 fi
 
-echo -e "${CYAN}${BOLD}Starting Sekant Platform...${RESET}"
+echo
+echo -e "${GREEN}${BOLD}Starting Sekant Management Console Platform...${RESET}"
+echo
 cd "$root_dir"
 
 sekant_image_repo="$(trim_whitespace "$(read_env_value "SEKANT_IMAGE_REPO")")"

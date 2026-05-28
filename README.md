@@ -5,7 +5,7 @@
 Run this in an empty folder (the `.` at the end clones into the current directory):
 
 ```bash
-git clone --branch 1.1.1 --depth 1 https://github.com/rishi-sekantsec/management-console .
+git clone --branch 1.1.2 --depth 1 https://github.com/rishi-sekantsec/management-console .
 ```
 
 ## 2) Start the installer
