@@ -1647,17 +1647,20 @@ if ! docker info >/dev/null 2>&1; then
   exit 1
 fi
 
+# Per-service platform pinning (below) handles per-image arch. Clear any inherited
+# global override so multi-arch images can resolve to the host arch naturally.
+unset DOCKER_DEFAULT_PLATFORM
+
 host_os="$(uname -s 2>/dev/null || true)"
-host_arch="$(uname -m 2>/dev/null || true)"
-platform_dir=""
-case "$host_arch" in
-  x86_64|amd64)
-    platform_dir="amd64"
-    ;;
-  arm64|aarch64)
-    platform_dir="arm64"
-    ;;
+host_arch_raw="$(uname -m 2>/dev/null || true)"
+case "$host_arch_raw" in
+  x86_64|amd64)   host_arch="amd64" ;;
+  arm64|aarch64)  host_arch="arm64" ;;
+  *)              host_arch="" ;;
 esac
+host_platform="linux/${host_arch}"
+
+platform_dir="$host_arch"
 has_native_distribution_images=0
 if [[ -n "$platform_dir" && -d "${root_dir}/images/${platform_dir}" ]]; then
   if find "${root_dir}/images/${platform_dir}" -maxdepth 1 -name "*.tar" -type f 2>/dev/null | head -n 1 | grep -q .; then
@@ -1665,13 +1668,121 @@ if [[ -n "$platform_dir" && -d "${root_dir}/images/${platform_dir}" ]]; then
   fi
 fi
 
-if [[ -z "${DOCKER_DEFAULT_PLATFORM:-}" && "$host_os" == "Darwin" && ( "$host_arch" == "arm64" || "$host_arch" == "aarch64" ) && $has_native_distribution_images -eq 0 ]]; then
-  export DOCKER_DEFAULT_PLATFORM="linux/amd64"
-  if (( quiet == 0 )); then
-    echo -e "${CYAN}${BOLD}Notice:${RESET} Apple Silicon detected. Using x86_64 Docker images via emulation (DOCKER_DEFAULT_PLATFORM=${DOCKER_DEFAULT_PLATFORM})."
-    echo "If containers fail to start, enable x86/amd64 emulation in Docker Desktop (Rosetta) or use an arm64 distribution build." >&2
+# Per-image platform detection: probe each service's image for native-arch
+# support and pin platform: linux/amd64 only on services that lack a native
+# variant. Multi-arch images (redis, postgres, keycloak, ...) run native on the
+# host; amd64-only images (sekant custom builds) run via emulation. Generated
+# into a compose override; no global DOCKER_DEFAULT_PLATFORM is set.
+image_decision() {
+  # Print one of: pin | native | unknown
+  #   pin     -> image has no ${host_arch} variant; pin platform: linux/amd64
+  #   native  -> image has a ${host_arch} variant; ensure cache matches, no pin
+  #   unknown -> manifest unreachable + no local cache; no pin, let daemon try
+  local image="$1"
+  [[ -z "$host_arch" ]] && { echo unknown; return; }
+  local manifest
+  manifest="$(docker manifest inspect "$image" 2>/dev/null || true)"
+  if [[ -n "$manifest" ]]; then
+    if grep -Eq "\"architecture\"[[:space:]]*:[[:space:]]*\"${host_arch}\"" <<<"$manifest"; then
+      echo native; return
+    fi
+    echo pin; return
   fi
-fi
+  local local_arch
+  local_arch="$(docker image inspect "$image" --format '{{.Architecture}}' 2>/dev/null || true)"
+  if [[ -n "$local_arch" ]]; then
+    [[ "$local_arch" == "$host_arch" ]] && { echo native; return; }
+    echo pin; return
+  fi
+  echo unknown
+}
+
+# Note: we don't reliably detect *which* platform's layers are present in the
+# local cache (the legacy `Architecture` field is empty for OCI image indexes,
+# and `.Manifests` isn't populated for cached images). So instead of "detect
+# then pull", we just `docker pull --platform=<host>` every native image. Pull
+# is idempotent: no-op when layers already exist, downloads only what's missing.
+
+generate_platform_override() {
+  [[ -z "$host_arch" ]] && return 0
+  command -v python3 >/dev/null 2>&1 || return 0
+
+  local compose_json
+  compose_json="$("${compose_cmd[@]}" -f "${root_dir}/docker-compose.yml" config --format json 2>/dev/null || true)"
+  [[ -z "$compose_json" ]] && return 0
+
+  local pairs
+  pairs="$(printf '%s' "$compose_json" | python3 -c '
+import sys, json
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for name, svc in (data.get("services") or {}).items():
+    img = (svc or {}).get("image")
+    if img:
+        print(f"{name}\t{img}")
+' 2>/dev/null || true)"
+  [[ -z "$pairs" ]] && return 0
+
+  local override_path="${root_dir}/.docker-compose.platform.yml"
+  local -a pinned=() native_pulls=()
+  local svc img decision
+  while IFS=$'\t' read -r svc img; do
+    [[ -z "$svc" || -z "$img" ]] && continue
+    decision="$(image_decision "$img")"
+    case "$decision" in
+      pin)    pinned+=("$svc") ;;
+      native) native_pulls+=("$img") ;;
+    esac
+  done <<<"$pairs"
+
+  # De-duplicate native_pulls (multiple services can share an image).
+  # Bash 3.2 (stock on macOS) lacks associative arrays, so use a sentinel string.
+  if (( ${#native_pulls[@]} > 0 )); then
+    local seen=$'\n'
+    local -a uniq=()
+    for img in "${native_pulls[@]}"; do
+      if [[ "$seen" != *$'\n'"$img"$'\n'* ]]; then
+        seen="${seen}${img}"$'\n'
+        uniq+=("$img")
+      fi
+    done
+    if (( quiet == 0 )); then
+      echo -e "${CYAN}${BOLD}Platform:${RESET} ensuring ${host_platform} layers cached for ${#uniq[@]} multi-arch image(s)..."
+    fi
+    for img in "${uniq[@]}"; do
+      run_cmd docker pull --platform="${host_platform}" "$img" || true
+    done
+  fi
+
+  if (( ${#pinned[@]} == 0 )); then
+    rm -f "$override_path"
+    if (( quiet == 0 )); then
+      echo -e "${CYAN}${BOLD}Platform:${RESET} all images support ${host_platform} natively."
+    fi
+    return 0
+  fi
+
+  {
+    echo "# Auto-generated by start.sh — do not edit. Pins amd64 only for services"
+    echo "# whose image has no native ${host_arch} variant; everything else runs native."
+    echo "services:"
+    for svc in "${pinned[@]}"; do
+      printf '  %s:\n    platform: linux/amd64\n' "$svc"
+    done
+  } >"$override_path"
+  compose_file_args+=("-f" "$override_path")
+
+  if (( quiet == 0 )); then
+    echo -e "${CYAN}${BOLD}Platform:${RESET} host is ${host_platform}. Pinning linux/amd64 for ${#pinned[@]} service(s) lacking a native ${host_arch} image: ${pinned[*]}"
+    if [[ "$host_arch" == "arm64" && "$host_os" == "Darwin" ]]; then
+      echo "Those services run via emulation — ensure Docker Desktop has 'Use Rosetta for x86/amd64 emulation' enabled." >&2
+    fi
+  fi
+}
+
+generate_platform_override
 
 existing_compose_project="$(trim_whitespace "$(read_env_value "COMPOSE_PROJECT_NAME")")"
 if [[ -z "$existing_compose_project" ]]; then
