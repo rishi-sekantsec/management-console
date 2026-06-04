@@ -93,6 +93,9 @@ CREATE TABLE IF NOT EXISTS sekant.security_events
     -- content_snippet is truncated to 10,000 characters by the caller (enforced by addContent()).
     content_snippet         Nullable(String)       DEFAULT NULL CODEC(ZSTD(1)),
     content_length          Nullable(Int64)        DEFAULT NULL,
+    encrypted_fields        Array(String)          DEFAULT [],
+    encryption_iv           Nullable(String)       DEFAULT NULL,
+    decryption_key          Nullable(String)       DEFAULT NULL,
 
     -- ── v2: User gesture ─────────────────────────────────────────────────────
     user_gesture            LowCardinality(Nullable(String)) DEFAULT NULL,

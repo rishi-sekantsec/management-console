@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.1.8"
+SEKANT_DASHBOARD_VERSION="1.1.9"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -46,6 +46,35 @@ if [[ ! -f "${root_dir}/docker-compose.yml" ]]; then
   echo "Run start.sh from the extracted build folder (or move start.sh next to docker-compose.yml)." >&2
   exit 1
 fi
+
+ensure_docker_config_isolated() {
+  if [[ "${SEKANT_ISOLATE_DOCKER_CONFIG:-1}" != "1" ]]; then
+    return 0
+  fi
+  if [[ -n "${DOCKER_CONFIG:-}" ]]; then
+    return 0
+  fi
+  if command -v uname >/dev/null 2>&1; then
+    if [[ "$(uname -s 2>/dev/null || true)" != "Linux" ]]; then
+      return 0
+    fi
+  else
+    return 0
+  fi
+
+  mkdir -p "${root_dir}/.docker-no-credential-helper"
+  export DOCKER_CONFIG="${root_dir}/.docker-no-credential-helper"
+  cat > "${DOCKER_CONFIG}/config.json" <<'EOF'
+{
+  "auths": {}
+}
+EOF
+  chmod 700 "${DOCKER_CONFIG}" 2>/dev/null || true
+  chmod 600 "${DOCKER_CONFIG}/config.json" 2>/dev/null || true
+  return 0
+}
+
+ensure_docker_config_isolated || true
 env_file="${root_dir}/.env"
 storage_dir="${root_dir}/clickhouse/config.d"
 force_reconfigure=0
@@ -796,6 +825,7 @@ run_cmd() {
 
 compose_override_file=""
 compose_file_args=("-f" "${root_dir}/docker-compose.yml")
+platform_override_file="${root_dir}/.docker-compose.platform.yml"
 
 run_compose() {
   run_cmd "${compose_cmd[@]}" "${compose_file_args[@]}" "$@"
@@ -817,37 +847,6 @@ load_distribution_images() {
 
   run_cmd bash "${root_dir}/load-images.sh"
 }
-
-ensure_docker_config_no_desktop_helper() {
-  local docker_config_dir="${DOCKER_CONFIG:-${HOME}/.docker}"
-  local config_path="${docker_config_dir}/config.json"
-
-  if [[ -f "${config_path}" ]] && grep -Eq '"credsStore"[[:space:]]*:|"credHelpers"[[:space:]]*:' "${config_path}"; then
-    if grep -Eqi '"credsStore"[[:space:]]*:[[:space:]]*"desktop(\.exe)?"|"docker-credential-desktop(\.exe)?"' "${config_path}"; then
-      if command -v uname >/dev/null 2>&1; then
-        if [[ "$(uname -s 2>/dev/null || true)" != "Linux" ]]; then
-          return 0
-        fi
-      fi
-      mkdir -p "${root_dir}/.docker-no-credential-helper"
-      export DOCKER_CONFIG="${root_dir}/.docker-no-credential-helper"
-      cat > "${DOCKER_CONFIG}/config.json" <<'EOF'
-{
-  "auths": {}
-}
-EOF
-      chmod 700 "${DOCKER_CONFIG}" 2>/dev/null || true
-      chmod 600 "${DOCKER_CONFIG}/config.json" 2>/dev/null || true
-      if (( quiet == 0 )); then
-        echo -e "${CYAN}${BOLD}Info:${RESET} Detected Docker Desktop credential helper config (credsStore/credHelpers=desktop[.exe])." >&2
-        echo "Using an isolated Docker config to avoid docker-credential-desktop.exe exec format errors in Linux shells." >&2
-      fi
-      return 0
-    fi
-  fi
-}
-
-ensure_docker_config_no_desktop_helper || true
 
 if (( upgrade == 1 )); then
   load_distribution_images || true
@@ -887,9 +886,13 @@ ensure_image_available() {
     set +e
     run_cmd bash "${root_dir}/load-images.sh"
     set -e
+    if docker image inspect "$image" >/dev/null 2>&1; then
+      return 0
+    fi
   fi
 
   if [[ "${SKIP_DOCKER_PULL:-0}" != "1" ]]; then
+    ensure_docker_config_isolated || true
     set +e
     run_cmd docker pull "$image"
     set -e
@@ -1647,31 +1650,140 @@ if ! docker info >/dev/null 2>&1; then
   exit 1
 fi
 
+# Per-service platform pinning handles mixed-arch images more safely than a
+# global override, so clear any inherited default first.
+unset DOCKER_DEFAULT_PLATFORM
+
 host_os="$(uname -s 2>/dev/null || true)"
-host_arch="$(uname -m 2>/dev/null || true)"
-platform_dir=""
-case "$host_arch" in
+host_arch_raw="$(uname -m 2>/dev/null || true)"
+case "$host_arch_raw" in
   x86_64|amd64)
-    platform_dir="amd64"
+    host_arch="amd64"
     ;;
   arm64|aarch64)
-    platform_dir="arm64"
+    host_arch="arm64"
+    ;;
+  *)
+    host_arch=""
     ;;
 esac
-has_native_distribution_images=0
-if [[ -n "$platform_dir" && -d "${root_dir}/images/${platform_dir}" ]]; then
-  if find "${root_dir}/images/${platform_dir}" -maxdepth 1 -name "*.tar" -type f 2>/dev/null | head -n 1 | grep -q .; then
-    has_native_distribution_images=1
-  fi
-fi
+host_platform="linux/${host_arch}"
 
-if [[ -z "${DOCKER_DEFAULT_PLATFORM:-}" && "$host_os" == "Darwin" && ( "$host_arch" == "arm64" || "$host_arch" == "aarch64" ) && $has_native_distribution_images -eq 0 ]]; then
-  export DOCKER_DEFAULT_PLATFORM="linux/amd64"
-  if (( quiet == 0 )); then
-    echo -e "${CYAN}${BOLD}Notice:${RESET} Apple Silicon detected. Using x86_64 Docker images via emulation (DOCKER_DEFAULT_PLATFORM=${DOCKER_DEFAULT_PLATFORM})."
-    echo "If containers fail to start, enable x86/amd64 emulation in Docker Desktop (Rosetta) or use an arm64 distribution build." >&2
+image_decision() {
+  # Print one of: pin | native | native-local | unknown
+  #   pin          -> image lacks a native ${host_arch} variant
+  #   native       -> registry confirms a native ${host_arch} variant
+  #   native-local -> local-only image matches ${host_arch}; no remote pull
+  #   unknown      -> registry/local metadata unavailable; let the daemon decide
+  local image="$1"
+  [[ -z "$host_arch" ]] && { echo unknown; return; }
+
+  local manifest
+  manifest="$(docker manifest inspect "$image" 2>/dev/null || true)"
+  if [[ -n "$manifest" ]]; then
+    if grep -Eq "\"architecture\"[[:space:]]*:[[:space:]]*\"${host_arch}\"" <<<"$manifest"; then
+      echo native
+      return
+    fi
+    echo pin
+    return
   fi
-fi
+
+  local local_arch
+  local_arch="$(docker image inspect "$image" --format '{{.Architecture}}' 2>/dev/null || true)"
+  if [[ -n "$local_arch" ]]; then
+    if [[ "$local_arch" == "$host_arch" ]]; then
+      echo native-local
+      return
+    fi
+    echo pin
+    return
+  fi
+
+  echo unknown
+}
+
+generate_platform_override() {
+  [[ -z "$host_arch" ]] && return 0
+  command -v python3 >/dev/null 2>&1 || return 0
+
+  local compose_json
+  compose_json="$("${compose_cmd[@]}" "${compose_file_args[@]}" config --format json 2>/dev/null || true)"
+  [[ -z "$compose_json" ]] && return 0
+
+  local pairs
+  pairs="$(printf '%s' "$compose_json" | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for name, svc in (data.get("services") or {}).items():
+    image = (svc or {}).get("image")
+    if image:
+        print(f"{name}\t{image}")
+' 2>/dev/null || true)"
+  [[ -z "$pairs" ]] && return 0
+
+  local -a pinned=() native_pulls=()
+  local svc img decision
+  while IFS=$'\t' read -r svc img; do
+    [[ -z "$svc" || -z "$img" ]] && continue
+    decision="$(image_decision "$img")"
+    case "$decision" in
+      pin)
+        pinned+=("$svc")
+        ;;
+      native)
+        native_pulls+=("$img")
+        ;;
+    esac
+  done <<<"$pairs"
+
+  if (( ${#native_pulls[@]} > 0 )); then
+    local seen=$'\n'
+    local -a uniq=()
+    for img in "${native_pulls[@]}"; do
+      if [[ "$seen" != *$'\n'"$img"$'\n'* ]]; then
+        seen="${seen}${img}"$'\n'
+        uniq+=("$img")
+      fi
+    done
+    if (( quiet == 0 )); then
+      echo -e "${CYAN}${BOLD}Platform:${RESET} ensuring ${host_platform} layers cached for ${#uniq[@]} multi-arch image(s)..."
+    fi
+    for img in "${uniq[@]}"; do
+      run_cmd docker pull --platform="${host_platform}" "$img" || true
+    done
+  fi
+
+  if (( ${#pinned[@]} == 0 )); then
+    rm -f "${platform_override_file}"
+    if (( quiet == 0 )); then
+      echo -e "${CYAN}${BOLD}Platform:${RESET} all images support ${host_platform} natively."
+    fi
+    return 0
+  fi
+
+  {
+    echo "# Auto-generated by start.sh. Do not edit."
+    echo "# Pins linux/amd64 only for services lacking a native ${host_arch} image."
+    echo "services:"
+    for svc in "${pinned[@]}"; do
+      printf '  %s:\n    platform: linux/amd64\n' "$svc"
+    done
+  } > "${platform_override_file}"
+  compose_file_args+=("-f" "${platform_override_file}")
+
+  if (( quiet == 0 )); then
+    echo -e "${CYAN}${BOLD}Platform:${RESET} host is ${host_platform}. Pinning linux/amd64 for ${#pinned[@]} service(s) lacking a native ${host_arch} image: ${pinned[*]}"
+    if [[ "$host_arch" == "arm64" && "$host_os" == "Darwin" ]]; then
+      echo "Those services run via emulation - ensure Docker Desktop has 'Use Rosetta for x86/amd64 emulation' enabled." >&2
+    fi
+  fi
+}
+
+generate_platform_override
 
 existing_compose_project="$(trim_whitespace "$(read_env_value "COMPOSE_PROJECT_NAME")")"
 if [[ -z "$existing_compose_project" ]]; then
