@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.1.10"
+SEKANT_DASHBOARD_VERSION="1.1.11"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -1719,6 +1719,14 @@ image_decision() {
 
 generate_platform_override() {
   [[ -z "$host_arch" ]] && return 0
+  if [[ "${SEKANT_SKIP_PLATFORM_PROBE:-}" == "1" ]]; then
+    preflight_note "Skipping Docker image platform checks."
+    return 0
+  fi
+  if [[ "$host_arch" == "amd64" ]]; then
+    preflight_note "Skipping Docker image platform checks on amd64 host."
+    return 0
+  fi
   command -v python3 >/dev/null 2>&1 || return 0
 
   preflight_note "Checking Docker image platforms..."
