@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.1.9"
+SEKANT_DASHBOARD_VERSION="1.1.10"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -113,6 +113,14 @@ github_last_api_message=""
 github_candidate_tag=""
 github_latest_tag_value=""
 
+preflight_note() {
+  if (( ${quiet:-0} == 0 )); then
+    echo -e "${CYAN}${BOLD}$1${RESET}" >&2
+  fi
+}
+
+preflight_timeout_sec="${SEKANT_PREFLIGHT_TIMEOUT_SEC:-15}"
+
 github_api_get_to_file() {
   local url="$1"
   local out="$2"
@@ -123,9 +131,9 @@ github_api_get_to_file() {
   if command -v curl >/dev/null 2>&1; then
     local status
     if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-      status="$(curl -sSL -H "Authorization: Bearer ${GITHUB_TOKEN}" -H "X-GitHub-Api-Version: 2022-11-28" -o "$out" -w "%{http_code}" "$url" || true)"
+      status="$(curl --connect-timeout 5 --max-time "${preflight_timeout_sec}" -sSL -H "Authorization: Bearer ${GITHUB_TOKEN}" -H "X-GitHub-Api-Version: 2022-11-28" -o "$out" -w "%{http_code}" "$url" || true)"
     else
-      status="$(curl -sSL -o "$out" -w "%{http_code}" "$url" || true)"
+      status="$(curl --connect-timeout 5 --max-time "${preflight_timeout_sec}" -sSL -o "$out" -w "%{http_code}" "$url" || true)"
     fi
     github_last_api_status="$status"
     if [[ "$status" != "200" ]]; then
@@ -136,7 +144,7 @@ github_api_get_to_file() {
   fi
 
   if command -v wget >/dev/null 2>&1; then
-    if wget -q -O "$out" "$url"; then
+    if wget --timeout="${preflight_timeout_sec}" --tries=1 -q -O "$out" "$url"; then
       github_last_api_status="200"
       return 0
     fi
@@ -750,6 +758,7 @@ fi
 
 latest_tag=""
 latest_semver=""
+preflight_note "Checking for installer updates..."
 if github_latest_tag; then
   latest_tag="$github_latest_tag_value"
   latest_semver="$(tag_semver "$latest_tag")"
@@ -1162,11 +1171,11 @@ compare_semver() {
 fetch_url() {
   local url="$1"
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$url"
+    curl --connect-timeout 5 --max-time "${preflight_timeout_sec}" -fsSL "$url"
     return $?
   fi
   if command -v wget >/dev/null 2>&1; then
-    wget -qO- "$url"
+    wget --timeout="${preflight_timeout_sec}" --tries=1 -qO- "$url"
     return $?
   fi
   return 127
@@ -1239,6 +1248,7 @@ check_for_upgrade_notice() {
   fi
 }
 
+preflight_note "Checking published image availability..."
 check_for_upgrade_notice || true
 
 detect_existing_compose_project() {
@@ -1679,7 +1689,11 @@ image_decision() {
   [[ -z "$host_arch" ]] && { echo unknown; return; }
 
   local manifest
-  manifest="$(docker manifest inspect "$image" 2>/dev/null || true)"
+  if command -v timeout >/dev/null 2>&1; then
+    manifest="$(timeout "${preflight_timeout_sec}" docker manifest inspect "$image" 2>/dev/null || true)"
+  else
+    manifest="$(docker manifest inspect "$image" 2>/dev/null || true)"
+  fi
   if [[ -n "$manifest" ]]; then
     if grep -Eq "\"architecture\"[[:space:]]*:[[:space:]]*\"${host_arch}\"" <<<"$manifest"; then
       echo native
@@ -1707,6 +1721,7 @@ generate_platform_override() {
   [[ -z "$host_arch" ]] && return 0
   command -v python3 >/dev/null 2>&1 || return 0
 
+  preflight_note "Checking Docker image platforms..."
   local compose_json
   compose_json="$("${compose_cmd[@]}" "${compose_file_args[@]}" config --format json 2>/dev/null || true)"
   [[ -z "$compose_json" ]] && return 0
