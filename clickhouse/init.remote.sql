@@ -91,11 +91,14 @@ CREATE TABLE IF NOT EXISTS sekant.security_events
 
     -- ── v2: Content ──────────────────────────────────────────────────────────
     -- content_snippet is truncated to 10,000 characters by the caller (enforced by addContent()).
+    -- Incoming payloads send nested encryption metadata via:
+    --   encryption.fields, encryption.id, encryption.ephemeral_public_key, encryption.encryption_iv
     content_snippet         Nullable(String)       DEFAULT NULL CODEC(ZSTD(1)),
     content_length          Nullable(Int64)        DEFAULT NULL,
-    encrypted_fields        Array(String)          DEFAULT [],
+    encryption_fields       Array(String)          DEFAULT [],
+    encryption_key_id       Nullable(String)       DEFAULT NULL,
+    encryption_ephemeral_public_key Nullable(String) DEFAULT NULL,
     encryption_iv           Nullable(String)       DEFAULT NULL,
-    decryption_key          Nullable(String)       DEFAULT NULL,
 
     -- ── v2: User gesture ─────────────────────────────────────────────────────
     user_gesture            LowCardinality(Nullable(String)) DEFAULT NULL,

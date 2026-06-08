@@ -174,9 +174,9 @@ CREATE TABLE IF NOT EXISTS system_settings (
 );
 
 INSERT INTO system_settings (key, value, updated_by)
-VALUES ('default_security_dashboard_cache_ttl_seconds', '63072000', 'system')
+VALUES ('default_security_dashboard_cache_ttl_seconds', '300', 'system')
 ON CONFLICT (key) DO UPDATE
 SET value = EXCLUDED.value,
     updated_at = NOW(),
     updated_by = EXCLUDED.updated_by
-WHERE system_settings.value = '300';
+WHERE system_settings.value = '63072000';

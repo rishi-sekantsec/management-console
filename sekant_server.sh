@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.1.11"
+SEKANT_DASHBOARD_VERSION="1.2.0"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -38,12 +38,16 @@ echo -e "${RESET}"
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root_dir="${script_dir}"
+script_display_name="sekant_server.sh"
+new_script_name="${script_display_name}.new"
+distribution_manifest_name="distribution-manifest.txt"
+managed_distribution_state_file="${root_dir}/.sekant-managed-files"
 if [[ ! -f "${root_dir}/docker-compose.yml" && -f "${root_dir}/../docker-compose.yml" ]]; then
   root_dir="$(cd "${root_dir}/.." && pwd)"
 fi
 if [[ ! -f "${root_dir}/docker-compose.yml" ]]; then
-  echo -e "${CYAN}${BOLD}Error:${RESET} Could not find docker-compose.yml next to start.sh." >&2
-  echo "Run start.sh from the extracted build folder (or move start.sh next to docker-compose.yml)." >&2
+  echo -e "${CYAN}${BOLD}Error:${RESET} Could not find docker-compose.yml next to ${script_display_name}." >&2
+  echo "Run ${script_display_name} from the extracted build folder (or move ${script_display_name} next to docker-compose.yml)." >&2
   exit 1
 fi
 
@@ -83,6 +87,8 @@ verbose=0
 quiet=0
 upgrade_log_file=""
 compose_up_args=()
+operation="install"
+operation_explicit=0
 github_owner="${SEKANT_GITHUB_OWNER:-rishi-sekantsec}"
 github_repo="${SEKANT_GITHUB_REPO:-management-console}"
 
@@ -193,11 +199,11 @@ script_file_version() {
   printf "%s" "$(normalize_version "$v")"
 }
 
-if [[ "${BASH_SOURCE[0]}" != *"start.sh.new" ]]; then
-  new_script="${root_dir}/start.sh.new"
+if [[ "${BASH_SOURCE[0]}" != *"${new_script_name}" ]]; then
+  new_script="${root_dir}/${new_script_name}"
   if [[ -f "$new_script" && -z "${SEKANT_NO_CHAIN_TO_NEW:-}" ]]; then
     v_new="$(script_file_version "$new_script")"
-    v_cur="$(script_file_version "${root_dir}/start.sh")"
+    v_cur="$(script_file_version "${root_dir}/${script_display_name}")"
     if [[ -z "$v_cur" || -z "$v_new" ]] || semver_gt "$v_new" "$v_cur"; then
       exec "$new_script" "$@"
     fi
@@ -347,38 +353,187 @@ detect_repo_prefix() {
   return 1
 }
 
+default_distribution_manifest() {
+  cat <<'EOF'
+distribution-manifest.txt
+.gitignore
+sekant_server.sh
+docker-compose.yml
+clickhouse/config.xml
+clickhouse/init.sql
+clickhouse/init.remote.sql
+clickhouse/storage.local.xml
+clickhouse/storage.remote.xml
+clickhouse/config.d/storage.xml
+postgres/init.sql
+certs/generate-public-cert.sh
+README.md
+EOF
+}
+
+fetch_distribution_manifest() {
+  local tag="$1"
+  local prefix="$2"
+  local tmp url
+  tmp="$(mktemp)"
+  url="https://raw.githubusercontent.com/${github_owner}/${github_repo}/${tag}/${prefix}${distribution_manifest_name}"
+  if http_get_to_file "$url" "$tmp" >/dev/null 2>&1; then
+    cat "$tmp"
+    rm -f "$tmp" >/dev/null 2>&1 || true
+    return 0
+  fi
+  rm -f "$tmp" >/dev/null 2>&1 || true
+  return 1
+}
+
+is_safe_relative_path() {
+  local rel
+  local part
+  rel="$(trim_whitespace "${1:-}")"
+  if [[ -z "$rel" || "$rel" == /* || "$rel" == *\\* ]]; then
+    return 1
+  fi
+  IFS='/' read -r -a parts <<<"$rel"
+  for part in "${parts[@]}"; do
+    if [[ -z "$part" || "$part" == "." || "$part" == ".." ]]; then
+      return 1
+    fi
+  done
+  return 0
+}
+
+manifest_list_contains() {
+  local needle="$1"
+  shift || true
+  local item
+  for item in "$@"; do
+    if [[ "$item" == "$needle" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+cleanup_empty_distribution_dirs() {
+  local rel="$1"
+  local dir
+  dir="$(dirname "$rel")"
+  while [[ "$dir" != "." && "$dir" != "/" ]]; do
+    rmdir "${root_dir}/${dir}" >/dev/null 2>&1 || break
+    dir="$(dirname "$dir")"
+  done
+}
+
+prune_removed_distribution_files() {
+  if [[ ! -f "$managed_distribution_state_file" ]]; then
+    return 0
+  fi
+
+  local old_rel
+  while IFS= read -r old_rel || [[ -n "$old_rel" ]]; do
+    old_rel="$(trim_whitespace "$(printf "%s" "$old_rel" | tr -d '\r')")"
+    if [[ -z "$old_rel" ]]; then
+      continue
+    fi
+    if ! manifest_list_contains "$old_rel" "$@"; then
+      rm -f "${root_dir}/${old_rel}" >/dev/null 2>&1 || true
+      cleanup_empty_distribution_dirs "$old_rel"
+    fi
+  done < "$managed_distribution_state_file"
+}
+
+save_managed_distribution_files() {
+  : > "$managed_distribution_state_file"
+  local rel
+  for rel in "$@"; do
+    printf "%s\n" "$rel" >> "$managed_distribution_state_file"
+  done
+}
+
+prepare_downloaded_distribution_script() {
+  local script_path="$1"
+  local version="$2"
+  local tmp
+  tmp="$(mktemp)"
+  awk -v version="$version" '
+    BEGIN { updated=0 }
+    /^SEKANT_DASHBOARD_VERSION="/ {
+      print "SEKANT_DASHBOARD_VERSION=\"" version "\""
+      updated=1
+      next
+    }
+    { print }
+    END {
+      if (!updated) {
+        print "SEKANT_DASHBOARD_VERSION=\"" version "\""
+      }
+    }
+  ' "$script_path" > "$tmp"
+  mv "$tmp" "$script_path"
+  chmod +x "$script_path" >/dev/null 2>&1 || true
+}
+
 apply_update_from_github() {
   local tag="$1"
   local prefix
+  local downloaded_version
   if ! prefix="$(detect_repo_prefix "$tag")"; then
     return 1
   fi
+  downloaded_version="$(tag_semver "$tag")"
+  if [[ -z "$downloaded_version" ]]; then
+    downloaded_version="$(normalize_version "$tag")"
+  fi
 
-  local files=(
-    "start.sh"
-    "docker-compose.yml"
-    "clickhouse/config.xml"
-    "clickhouse/init.sql"
-    "clickhouse/init.remote.sql"
-    "clickhouse/storage.local.xml"
-    "clickhouse/storage.remote.xml"
-    "clickhouse/config.d/storage.xml"
-    "postgres/init.sql"
-  )
+  local manifest_text raw_line source_path dest_path url tmp dest_dir dest
+  local manifest_sources=()
+  local manifest_dests=()
+  if ! manifest_text="$(fetch_distribution_manifest "$tag" "$prefix")"; then
+    manifest_text="$(default_distribution_manifest)"
+  fi
 
-  local f url tmp dest_dir dest
-  for f in "${files[@]}"; do
-    url="https://raw.githubusercontent.com/${github_owner}/${github_repo}/${tag}/${prefix}${f}"
+  while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
+    raw_line="$(trim_whitespace "$(printf "%s" "$raw_line" | tr -d '\r')")"
+    if [[ -z "$raw_line" || "$raw_line" == \#* ]]; then
+      continue
+    fi
+
+    source_path="$raw_line"
+    dest_path="$raw_line"
+    if [[ "$raw_line" == *"|"* ]]; then
+      source_path="$(trim_whitespace "${raw_line%%|*}")"
+      dest_path="$(trim_whitespace "${raw_line#*|}")"
+    fi
+
+    if ! is_safe_relative_path "$source_path" || ! is_safe_relative_path "$dest_path"; then
+      echo -e "${CYAN}${BOLD}Error:${RESET} Invalid upgrade manifest entry: ${raw_line}" >&2
+      return 1
+    fi
+
+    manifest_sources+=("$source_path")
+    manifest_dests+=("$dest_path")
+  done <<< "$manifest_text"
+
+  if (( ${#manifest_sources[@]} == 0 )); then
+    echo -e "${CYAN}${BOLD}Error:${RESET} Upgrade manifest is empty for ${tag}." >&2
+    return 1
+  fi
+
+  local i
+  for (( i=0; i<${#manifest_sources[@]}; i++ )); do
+    source_path="${manifest_sources[$i]}"
+    dest_path="${manifest_dests[$i]}"
+    url="https://raw.githubusercontent.com/${github_owner}/${github_repo}/${tag}/${prefix}${source_path}"
     tmp="$(mktemp)"
     if ! http_get_to_file "$url" "$tmp" >/dev/null 2>&1; then
       rm -f "$tmp" >/dev/null 2>&1 || true
-      echo -e "${CYAN}${BOLD}Error:${RESET} Failed to download ${f} from ${url}" >&2
+      echo -e "${CYAN}${BOLD}Error:${RESET} Failed to download ${source_path} from ${url}" >&2
       return 1
     fi
-    if [[ "$f" == "start.sh" ]]; then
-      dest="${root_dir}/start.sh.new"
+    if [[ "$dest_path" == "${script_display_name}" ]]; then
+      dest="${root_dir}/${new_script_name}"
     else
-      dest="${root_dir}/${f}"
+      dest="${root_dir}/${dest_path}"
     fi
     dest_dir="$(dirname "$dest")"
     mkdir -p "$dest_dir"
@@ -391,9 +546,15 @@ apply_update_from_github() {
         return 1
       fi
     fi
+
+    if [[ "$dest_path" == "${script_display_name}" ]]; then
+      prepare_downloaded_distribution_script "$dest" "$downloaded_version"
+    fi
   done
 
-  chmod +x "${root_dir}/start.sh.new" >/dev/null 2>&1 || true
+  prune_removed_distribution_files "${manifest_dests[@]}"
+  save_managed_distribution_files "${manifest_dests[@]}"
+  chmod +x "${root_dir}/${new_script_name}" >/dev/null 2>&1 || true
   return 0
 }
 
@@ -414,7 +575,7 @@ check_for_github_update() {
 
   if [[ -z "$current" ]]; then
     if (( quiet == 0 )); then
-      echo -e "${CYAN}${BOLD}Notice:${RESET} Latest available version is ${latest} (run ./start.sh --upgrade to upgrade)."
+      echo -e "${CYAN}${BOLD}Notice:${RESET} Latest available version is ${latest} (run ./${script_display_name} --upgrade to upgrade)."
     fi
     return 0
   fi
@@ -422,7 +583,7 @@ check_for_github_update() {
   if semver_gt "$latest" "$current"; then
     if (( quiet == 0 )); then
       echo -e "${CYAN}${BOLD}Update available:${RESET} v${current} -> v${latest}"
-      echo "Run ./start.sh --upgrade to upgrade to the latest version."
+      echo "Run ./${script_display_name} --upgrade to upgrade to the latest version."
       echo "Docker images are available at: https://hub.docker.com/r/sekantsec/management-console"
       echo "Distribution sources: https://github.com/${github_owner}/${github_repo}"
     fi
@@ -608,12 +769,12 @@ CREATE TABLE IF NOT EXISTS system_settings (
 );
 
 INSERT INTO system_settings (key, value, updated_by)
-VALUES ('default_security_dashboard_cache_ttl_seconds', '63072000', 'system')
+VALUES ('default_security_dashboard_cache_ttl_seconds', '300', 'system')
 ON CONFLICT (key) DO UPDATE
 SET value = EXCLUDED.value,
     updated_at = NOW(),
     updated_by = EXCLUDED.updated_by
-WHERE system_settings.value = '300';
+WHERE system_settings.value = '63072000';
 EOF
 }
 
@@ -729,8 +890,27 @@ select_yes_no_upgrade() {
   done
 }
 
+set_operation() {
+  local next_operation="$1"
+  if (( operation_explicit == 1 )) && [[ "$operation" != "$next_operation" ]]; then
+    echo -e "${CYAN}${BOLD}Error:${RESET} Choose only one of --install, --start, or --stop." >&2
+    exit 2
+  fi
+  operation="$next_operation"
+  operation_explicit=1
+}
+
 for arg in "$@"; do
   case "$arg" in
+    --install)
+      set_operation "install"
+      ;;
+    --start)
+      set_operation "start"
+      ;;
+    --stop)
+      set_operation "stop"
+      ;;
     --reconfigure)
       force_reconfigure=1
       ;;
@@ -749,6 +929,15 @@ for arg in "$@"; do
   esac
 done
 
+if [[ "$operation" != "install" && $force_reconfigure -eq 1 ]]; then
+  echo -e "${CYAN}${BOLD}Error:${RESET} --reconfigure can only be used with install/upgrade." >&2
+  exit 2
+fi
+if [[ "$operation" != "install" && $upgrade -eq 1 ]]; then
+  echo -e "${CYAN}${BOLD}Error:${RESET} --upgrade cannot be combined with --start or --stop." >&2
+  exit 2
+fi
+
 if (( upgrade == 1 && verbose == 0 )); then
   quiet=1
 fi
@@ -758,65 +947,67 @@ fi
 
 latest_tag=""
 latest_semver=""
-preflight_note "Checking for installer updates..."
-if github_latest_tag; then
-  latest_tag="$github_latest_tag_value"
-  latest_semver="$(tag_semver "$latest_tag")"
-  if [[ -z "$latest_semver" ]]; then
-    latest_semver="$(normalize_version "$latest_tag")"
-  fi
-fi
-
-current_semver="$(normalize_version "${SEKANT_DASHBOARD_VERSION:-}")"
-update_available=0
-if [[ -n "$latest_semver" && -n "$current_semver" ]] && semver_gt "$latest_semver" "$current_semver"; then
-  update_available=1
-fi
-
-if (( update_available == 1 )); then
-  if (( quiet == 0 )); then
-    echo -e "${CYAN}${BOLD}Update available:${RESET} v${current_semver} -> v${latest_semver}"
+if [[ "$operation" == "install" ]]; then
+  preflight_note "Checking for installer updates..."
+  if github_latest_tag; then
+    latest_tag="$github_latest_tag_value"
+    latest_semver="$(tag_semver "$latest_tag")"
+    if [[ -z "$latest_semver" ]]; then
+      latest_semver="$(normalize_version "$latest_tag")"
+    fi
   fi
 
-  do_upgrade="no"
-  if (( upgrade == 1 )); then
-    do_upgrade="yes"
-  else
-    do_upgrade="$(select_yes_no_upgrade "Upgrade to v${latest_semver} now?" "no")"
+  current_semver="$(normalize_version "${SEKANT_DASHBOARD_VERSION:-}")"
+  update_available=0
+  if [[ -n "$latest_semver" && -n "$current_semver" ]] && semver_gt "$latest_semver" "$current_semver"; then
+    update_available=1
   fi
 
-  if [[ "$do_upgrade" == "yes" ]]; then
+  if (( update_available == 1 )); then
     if (( quiet == 0 )); then
-      echo -e "${CYAN}${BOLD}Updating:${RESET} Downloading distribution files for ${latest_tag}..."
-    fi
-    if ! apply_update_from_github "$latest_tag"; then
-      echo -e "${CYAN}${BOLD}Error:${RESET} Update failed." >&2
-      exit 1
+      echo -e "${CYAN}${BOLD}Update available:${RESET} v${current_semver} -> v${latest_semver}"
     fi
 
-    new_args=()
-    for arg in "$@"; do
-      if [[ "$arg" == "--upgrade" || "$arg" == "--ugrade" ]]; then
-        continue
-      fi
-      new_args+=("$arg")
-    done
-    new_args=(--upgrade "${new_args[@]+"${new_args[@]}"}")
-
-    updated_script="${root_dir}/start.sh.new"
-    if [[ -f "$updated_script" ]]; then
-      chmod +x "$updated_script" >/dev/null 2>&1 || true
-      if mv "$updated_script" "${root_dir}/start.sh" >/dev/null 2>&1; then
-        chmod +x "${root_dir}/start.sh" >/dev/null 2>&1 || true
-        SEKANT_FORCE_IMAGE_TAG="${latest_semver}" exec "${root_dir}/start.sh" "${new_args[@]+"${new_args[@]}"}"
-      fi
-      SEKANT_FORCE_IMAGE_TAG="${latest_semver}" exec "$updated_script" "${new_args[@]+"${new_args[@]}"}"
+    do_upgrade="no"
+    if (( upgrade == 1 )); then
+      do_upgrade="yes"
+    else
+      do_upgrade="$(select_yes_no_upgrade "Upgrade to v${latest_semver} now?" "no")"
     fi
-    SEKANT_FORCE_IMAGE_TAG="${latest_semver}" exec "${root_dir}/start.sh" "${new_args[@]+"${new_args[@]}"}"
-  fi
-else
-  if (( upgrade == 1 && quiet == 0 )); then
-    echo -e "${CYAN}${BOLD}No update available:${RESET} continuing with current version v${current_semver}"
+
+    if [[ "$do_upgrade" == "yes" ]]; then
+      if (( quiet == 0 )); then
+        echo -e "${CYAN}${BOLD}Updating:${RESET} Downloading distribution files for ${latest_tag}..."
+      fi
+      if ! apply_update_from_github "$latest_tag"; then
+        echo -e "${CYAN}${BOLD}Error:${RESET} Update failed." >&2
+        exit 1
+      fi
+
+      new_args=()
+      for arg in "$@"; do
+        if [[ "$arg" == "--upgrade" || "$arg" == "--ugrade" ]]; then
+          continue
+        fi
+        new_args+=("$arg")
+      done
+      new_args=(--upgrade "${new_args[@]+"${new_args[@]}"}")
+
+      updated_script="${root_dir}/${new_script_name}"
+      if [[ -f "$updated_script" ]]; then
+        chmod +x "$updated_script" >/dev/null 2>&1 || true
+        if mv "$updated_script" "${root_dir}/${script_display_name}" >/dev/null 2>&1; then
+          chmod +x "${root_dir}/${script_display_name}" >/dev/null 2>&1 || true
+          SEKANT_FORCE_IMAGE_TAG="${latest_semver}" exec "${root_dir}/${script_display_name}" "${new_args[@]+"${new_args[@]}"}"
+        fi
+        SEKANT_FORCE_IMAGE_TAG="${latest_semver}" exec "$updated_script" "${new_args[@]+"${new_args[@]}"}"
+      fi
+      SEKANT_FORCE_IMAGE_TAG="${latest_semver}" exec "${root_dir}/${script_display_name}" "${new_args[@]+"${new_args[@]}"}"
+    fi
+  else
+    if (( upgrade == 1 && quiet == 0 )); then
+      echo -e "${CYAN}${BOLD}No update available:${RESET} continuing with current version v${current_semver}"
+    fi
   fi
 fi
 
@@ -840,6 +1031,12 @@ run_compose() {
   run_cmd "${compose_cmd[@]}" "${compose_file_args[@]}" "$@"
 }
 
+compose_project_has_containers() {
+  local compose_ps_output=""
+  compose_ps_output="$("${compose_cmd[@]}" "${compose_file_args[@]}" ps -a -q 2>/dev/null || true)"
+  [[ -n "$(printf "%s" "$compose_ps_output" | tr -d '[:space:]')" ]]
+}
+
 load_distribution_images() {
   if [[ ! -f "${root_dir}/load-images.sh" ]]; then
     return 0
@@ -857,16 +1054,18 @@ load_distribution_images() {
   run_cmd bash "${root_dir}/load-images.sh"
 }
 
-if (( upgrade == 1 )); then
-  load_distribution_images || true
-else
-  image_loaded_marker="${root_dir}/.images_loaded"
-  if [[ -n "${SEKANT_DASHBOARD_VERSION:-}" ]]; then
-    image_loaded_marker="${root_dir}/.images_loaded_${SEKANT_DASHBOARD_VERSION}"
-  fi
-  if [[ -f "${root_dir}/load-images.sh" && -d "${root_dir}/images" && ! -f "$image_loaded_marker" ]]; then
+if [[ "$operation" == "install" ]]; then
+  if (( upgrade == 1 )); then
     load_distribution_images || true
-    run_cmd touch "$image_loaded_marker" 2>/dev/null || true
+  else
+    image_loaded_marker="${root_dir}/.images_loaded"
+    if [[ -n "${SEKANT_DASHBOARD_VERSION:-}" ]]; then
+      image_loaded_marker="${root_dir}/.images_loaded_${SEKANT_DASHBOARD_VERSION}"
+    fi
+    if [[ -f "${root_dir}/load-images.sh" && -d "${root_dir}/images" && ! -f "$image_loaded_marker" ]]; then
+      load_distribution_images || true
+      run_cmd touch "$image_loaded_marker" 2>/dev/null || true
+    fi
   fi
 fi
 
@@ -1789,7 +1988,7 @@ for name, svc in (data.get("services") or {}).items():
   fi
 
   {
-    echo "# Auto-generated by start.sh. Do not edit."
+    echo "# Auto-generated by ${script_display_name}. Do not edit."
     echo "# Pins linux/amd64 only for services lacking a native ${host_arch} image."
     echo "services:"
     for svc in "${pinned[@]}"; do
@@ -1806,7 +2005,9 @@ for name, svc in (data.get("services") or {}).items():
   fi
 }
 
-generate_platform_override
+if [[ "$operation" == "install" ]]; then
+  generate_platform_override
+fi
 
 existing_compose_project="$(trim_whitespace "$(read_env_value "COMPOSE_PROJECT_NAME")")"
 if [[ -z "$existing_compose_project" ]]; then
@@ -1919,7 +2120,7 @@ seed_admin_email=""
 seed_admin_password="$seed_admin_password_default"
 dashboard_https_port_default="443"
 ingest_port_default="31415"
-clickhouse_retention_days_default="700"
+clickhouse_retention_days_default="730"
 dashboard_https_port="$dashboard_https_port_default"
 ingest_port="$ingest_port_default"
 ingest_protocol="https"
@@ -2007,6 +2208,51 @@ if has_running_sekant_deployment; then
   has_existing_runtime=1
 fi
 
+if [[ "$operation" == "stop" ]]; then
+  cd "$root_dir"
+  if (( has_existing_runtime == 0 )) && ! compose_project_has_containers; then
+    echo -e "${CYAN}${BOLD}Notice:${RESET} No Sekant containers are currently running."
+    exit 0
+  fi
+  echo -e "${CYAN}${BOLD}Stopping Sekant containers (preserving volumes)...${RESET}"
+  run_compose stop "${compose_up_args[@]+"${compose_up_args[@]}"}"
+  exit 0
+fi
+
+if [[ "$operation" == "start" ]]; then
+  cd "$root_dir"
+  if compose_project_has_containers; then
+    echo -e "${GREEN}${BOLD}Starting previously stopped Sekant containers...${RESET}"
+    set +e
+    run_compose start "${compose_up_args[@]+"${compose_up_args[@]}"}"
+    compose_status=$?
+    set -e
+
+    has_service_args=0
+    for arg in "${compose_up_args[@]+"${compose_up_args[@]}"}"; do
+      if [[ "$arg" != -* ]]; then
+        has_service_args=1
+        break
+      fi
+    done
+    if (( compose_status == 0 && has_service_args == 0 )); then
+      set +e
+      wait_for_sekant_ready
+      wait_status=$?
+      set -e
+      if (( wait_status != 0 )); then
+        compose_status=1
+      else
+        ensure_clickhouse_retention_ttl || compose_status=1
+      fi
+    fi
+    exit "$compose_status"
+  fi
+
+  echo -e "${CYAN}${BOLD}Notice:${RESET} No existing stopped containers found; continuing with install flow."
+  operation="install"
+fi
+
 if (( has_existing_volumes == 0 && has_existing_runtime == 0 )); then
   assert_port_free "$dashboard_https_port" "Dashboard HTTPS"
   assert_port_free "$ingest_port" "Ingestion HTTPS"
@@ -2029,7 +2275,7 @@ else
   configure_local_clickhouse
 fi
 
-if (( upgrade == 1 || has_existing_runtime == 1 )); then
+if [[ "$operation" == "install" ]] && (( upgrade == 1 || has_existing_runtime == 1 )); then
   echo -e "${CYAN}${BOLD}Stopping existing containers (preserving volumes)...${RESET}"
   cd "$root_dir"
   run_compose down --remove-orphans
@@ -2065,7 +2311,7 @@ if [[ "$sekant_image_repo" != */* ]]; then
   if ! docker image inspect "$init_secrets_image" >/dev/null 2>&1; then
     echo -e "${CYAN}${BOLD}Error:${RESET} SEKANT_IMAGE_REPO must be a namespaced Docker repo (e.g. swastiksharmadev/sekant)." >&2
     echo "Current SEKANT_IMAGE_REPO=${sekant_image_repo}" >&2
-    echo "Update .env (SEKANT_IMAGE_REPO / SEKANT_IMAGE_TAG) to point at your pushed images, then re-run start.sh." >&2
+    echo "Update .env (SEKANT_IMAGE_REPO / SEKANT_IMAGE_TAG) to point at your pushed images, then re-run ${script_display_name}." >&2
     exit 1
   fi
 else
@@ -2118,9 +2364,9 @@ else
     else
       echo -e "${CYAN}${BOLD}Error:${RESET} Missing required Docker image: ${init_secrets_image}" >&2
       if [[ -f "${root_dir}/load-images.sh" ]]; then
-        echo "Run ./load-images.sh (or docker load the provided images) and re-run start.sh." >&2
+        echo "Run ./load-images.sh (or docker load the provided images) and re-run ${script_display_name}." >&2
       else
-        echo "Make sure the image exists in your registry and SEKANT_IMAGE_REPO / SEKANT_IMAGE_TAG are correct in .env, then re-run start.sh." >&2
+        echo "Make sure the image exists in your registry and SEKANT_IMAGE_REPO / SEKANT_IMAGE_TAG are correct in .env, then re-run ${script_display_name}." >&2
       fi
     fi
     exit 1
@@ -2130,7 +2376,7 @@ fi
 init_secrets_check_image="$init_secrets_image"
 if ! docker run --rm "${init_secrets_check_image}" sh -c "grep -q \"Caddyfile prepared successfully\" /usr/local/bin/init-secrets.sh"; then
   echo -e "${CYAN}${BOLD}Error:${RESET} init-secrets image is missing the required upgrade logic." >&2
-  echo "Update SEKANT_IMAGE_REPO / SEKANT_IMAGE_TAG (or SEKANT_INIT_SECRETS_IMAGE*) to a newer image, then re-run start.sh." >&2
+  echo "Update SEKANT_IMAGE_REPO / SEKANT_IMAGE_TAG (or SEKANT_INIT_SECRETS_IMAGE*) to a newer image, then re-run ${script_display_name}." >&2
   exit 1
 fi
 

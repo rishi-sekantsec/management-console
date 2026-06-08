@@ -33,6 +33,7 @@ services:
       OKTA_OAUTH_CLIENT_SECRET: ${OKTA_OAUTH_CLIENT_SECRET:-}
     volumes:
       - sekant_secrets:/run/secrets
+      - ./certs:/certs:ro
     entrypoint: ["/bin/sh", "-c", "sh /usr/local/bin/init-secrets.sh && tail -f /dev/null"]
     healthcheck:
       test: ["CMD-SHELL", "ls /run/secrets/keycloak_admin_password && ls /run/secrets/realm-export.json && ls /run/secrets/users.xml && ls /run/secrets/fluent-bit.conf && ls /run/secrets/security_events.lua && ls /run/secrets/Caddyfile"]
@@ -61,6 +62,7 @@ services:
     volumes:
       - sekant_secrets:/run/secrets:ro
       - caddy_data:/data
+      - ./certs:/certs:ro
     command: ["caddy", "run", "--config", "/run/secrets/Caddyfile", "--adapter", "caddyfile"]
     depends_on:
       init-secrets:

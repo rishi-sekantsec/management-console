@@ -1,0 +1,55 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+!.env.push.example
+!.env.dockerhub.example
+
+# Node / frontend / backend
+node_modules/
+dist/
+build/
+build_*/
+build-*/
+sekant-dashboard-*.zip
+.vite/
+coverage/
+*.tsbuildinfo
+.eslintcache
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Docker / local runtime artifacts
+.docker-compose.platform.yml
+caddy_data/
+*.pid
+.docker-buildx-auth/
+.docker-auth/
+
+# Logs and temp files
+*.log
+*.tmp
+*.temp
+*.local
+_tmp_*/
+
+# OS / editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/settings.json
+
+# Local test artifacts (keep sample scripts in repo if needed)
+cookies.txt
+login_ok.json
+login_bad.json
