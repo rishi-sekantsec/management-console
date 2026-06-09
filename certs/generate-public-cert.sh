@@ -41,6 +41,19 @@ run_acme() {
     "$ACME_IMAGE" "$@"
 }
 
+wait_for_dns_confirmation() {
+  local answer=""
+  while true; do
+    printf "Type 'continue' once the TXT record is created and visible in DNS: "
+    IFS= read -r answer
+    answer="$(trim "$answer")"
+    if [[ "$(printf "%s" "$answer" | tr '[:upper:]' '[:lower:]')" == "continue" ]]; then
+      return 0
+    fi
+    echo "DNS validation is still paused. Enter exactly 'continue' after the TXT record is live."
+  done
+}
+
 if ! command -v docker >/dev/null 2>&1; then
   echo "Error: docker is required to generate public certificates." >&2
   exit 1
@@ -82,16 +95,23 @@ echo
 echo "Step 1/3: Starting manual DNS validation."
 echo "Copy the TXT record shown by acme.sh into your DNS provider."
 echo
+set +e
 run_acme \
   --issue \
   --server "$LETSENCRYPT_SERVER" \
   --dns \
   -d "$domain" \
   --yes-I-know-dns-manual-mode-enough-go-ahead-please
+issue_status=$?
+set -e
+
+if (( issue_status != 0 )); then
+  echo
+  echo "acme.sh returned after printing the TXT record. This is expected in manual DNS mode."
+fi
 
 echo
-printf "After the TXT record is created and visible in DNS, press Enter to continue..."
-IFS= read -r _
+wait_for_dns_confirmation
 
 echo
 echo "Step 2/3: Completing validation with Let's Encrypt."

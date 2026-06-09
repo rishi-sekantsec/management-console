@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.2.0"
+SEKANT_DASHBOARD_VERSION="1.2.1"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -1139,6 +1139,58 @@ wait_for_container_ready() {
   done
 }
 
+postgres_query_with_retry() {
+  local container_name="$1"
+  local pg_user="$2"
+  local database_name="$3"
+  local sql="$4"
+  local timeout_seconds="${5:-120}"
+  local start_seconds="$SECONDS"
+  local output status
+
+  while true; do
+    set +e
+    output="$(docker exec -i "$container_name" psql -v ON_ERROR_STOP=1 -U "$pg_user" -d "$database_name" -Atqc "$sql" 2>&1)"
+    status=$?
+    set -e
+    if (( status == 0 )); then
+      printf '%s\n' "$output"
+      return 0
+    fi
+    if (( SECONDS - start_seconds > timeout_seconds )); then
+      [[ -n "$output" ]] && printf '%s\n' "$output" >&2
+      return "$status"
+    fi
+    sleep 2
+  done
+}
+
+postgres_file_with_retry() {
+  local container_name="$1"
+  local pg_user="$2"
+  local database_name="$3"
+  local file_path="$4"
+  local timeout_seconds="${5:-120}"
+  local start_seconds="$SECONDS"
+  local output status
+
+  while true; do
+    set +e
+    output="$(docker exec -i "$container_name" psql -v ON_ERROR_STOP=1 -U "$pg_user" -d "$database_name" -f "$file_path" 2>&1)"
+    status=$?
+    set -e
+    if (( status == 0 )); then
+      printf '%s\n' "$output"
+      return 0
+    fi
+    if (( SECONDS - start_seconds > timeout_seconds )); then
+      [[ -n "$output" ]] && printf '%s\n' "$output" >&2
+      return "$status"
+    fi
+    sleep 2
+  done
+}
+
 ensure_postgres_bootstrap() {
   local container_name="sekant-postgres"
   local pg_user
@@ -1154,15 +1206,13 @@ ensure_postgres_bootstrap() {
     return 1
   fi
 
-  set +e
-  docker exec -i "$container_name" psql -U "$pg_user" -d postgres -tc "SELECT 1 FROM pg_database WHERE datname='sekant';" | tr -d '\r' | grep -q "1"
-  has_sekant_db=$?
-  set -e
-  if (( has_sekant_db != 0 )); then
-    docker exec -i "$container_name" psql -U "$pg_user" -d postgres -c "CREATE DATABASE sekant;" >/dev/null
+  local db_exists_output
+  db_exists_output="$(postgres_query_with_retry "$container_name" "$pg_user" "postgres" "SELECT 1 FROM pg_database WHERE datname='sekant';")" || return 1
+  if ! printf '%s\n' "$db_exists_output" | tr -d '\r' | grep -q '^1$'; then
+    postgres_query_with_retry "$container_name" "$pg_user" "postgres" "CREATE DATABASE sekant;" >/dev/null || return 1
   fi
 
-  docker exec -i "$container_name" psql -U "$pg_user" -d sekant -f "$init_file" >/dev/null
+  postgres_file_with_retry "$container_name" "$pg_user" "sekant" "$init_file" >/dev/null || return 1
   return 0
 }
 
@@ -1853,9 +1903,50 @@ configure_remote_clickhouse_from_env() {
 
 resolve_compose_command
 
-# Validate that docker is running
-if ! docker info >/dev/null 2>&1; then
-  echo -e "${CYAN}${BOLD}Error: Docker is not running. Please start Docker first.${RESET}" >&2
+host_os="$(uname -s 2>/dev/null || true)"
+
+if ! command -v docker >/dev/null 2>&1; then
+  echo -e "${CYAN}${BOLD}Error:${RESET} docker command not found in PATH." >&2
+  if [[ "$host_os" == MINGW* || "$host_os" == MSYS* || "$host_os" == CYGWIN* ]]; then
+    echo "Install/start Docker Desktop and ensure docker.exe is available in this shell's PATH, then re-run ${script_display_name}." >&2
+  else
+    echo "Install Docker (client + daemon), then re-run ${script_display_name}." >&2
+  fi
+  exit 1
+fi
+
+docker_info_out=""
+docker_ok=0
+attempt=1
+max_attempts=8
+while (( attempt <= max_attempts )); do
+  docker_info_out="$(docker info 2>&1)" && docker_ok=1 && break
+  sleep 1
+  attempt=$(( attempt + 1 ))
+done
+if (( docker_ok != 1 )); then
+  echo -e "${CYAN}${BOLD}Error:${RESET} Docker daemon is not reachable from this shell." >&2
+  if [[ -n "${docker_info_out:-}" ]]; then
+    printf "%s\n" "$docker_info_out" >&2
+  fi
+
+  if [[ "$host_os" == "Linux" ]] && grep -Eqi 'permission denied|got permission denied|/var/run/docker\.sock' <<<"${docker_info_out:-}"; then
+    echo "Docker may already be running, but this user cannot access the Docker socket." >&2
+    echo "On AL2023, add your user to the docker group and re-login:" >&2
+    echo "  sudo usermod -aG docker \$USER" >&2
+    echo "  newgrp docker" >&2
+    echo "Or run ${script_display_name} with sudo as a quick test." >&2
+  elif [[ "$host_os" == "Linux" ]] && grep -Eqi 'cannot connect to the docker daemon|is the docker daemon running|no such file or directory' <<<"${docker_info_out:-}"; then
+    echo "If Docker should be running, verify the service and socket on this host:" >&2
+    echo "  sudo systemctl status docker" >&2
+    echo "  sudo systemctl start docker" >&2
+  fi
+
+  docker_ctx="$(docker context show 2>/dev/null || true)"
+  docker_ctx="$(printf "%s" "$docker_ctx" | tr -d '\r' | tr -d ' \t\r\n')"
+  if [[ -n "$docker_ctx" ]]; then
+    echo "Docker context: ${docker_ctx}" >&2
+  fi
   exit 1
 fi
 
@@ -1863,7 +1954,6 @@ fi
 # global override, so clear any inherited default first.
 unset DOCKER_DEFAULT_PLATFORM
 
-host_os="$(uname -s 2>/dev/null || true)"
 host_arch_raw="$(uname -m 2>/dev/null || true)"
 case "$host_arch_raw" in
   x86_64|amd64)
