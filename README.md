@@ -6,6 +6,8 @@
 - `git`
 - `docker`
 - `docker compose`
+- On Linux/EC2, use at least `3 GB` RAM, or `2 GB` RAM plus at least `2 GB` swap before starting the full stack.
+- The startup script now refuses to launch on undersized Linux hosts unless you set `SEKANT_SKIP_HOST_RESOURCE_CHECK=1`.
 - On Apple Silicon, enable Docker Desktop's `Use Rosetta for x86/amd64 emulation` for any amd64-only Sekant images.
 - `sekant_server.sh` auto-detects image architecture per service and only pins `linux/amd64` for images that do not publish a native arm64 variant.
 
@@ -21,7 +23,7 @@ cd sekant
 Run this in the empty folder you created above. The `.` at the end clones the repository into the current directory.
 
 ```bash
-git clone --branch v1.2.2 --depth 1 https://github.com/rishi-sekantsec/management-console .
+git clone --branch v1.2.3 --depth 1 https://github.com/rishi-sekantsec/management-console .
 ```
 
 ## 2) Start the Installer

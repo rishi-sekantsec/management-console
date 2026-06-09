@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.2.2"
+SEKANT_DASHBOARD_VERSION="1.2.3"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -1620,6 +1620,64 @@ resolve_compose_command() {
   fi
 }
 
+read_meminfo_kb() {
+  local key="$1"
+  awk -v target="$key" '$1 == target ":" { print $2; exit }' /proc/meminfo 2>/dev/null || true
+}
+
+linux_host_resource_preflight() {
+  if [[ "${SEKANT_SKIP_HOST_RESOURCE_CHECK:-0}" == "1" ]]; then
+    preflight_note "Skipping Linux host resource checks."
+    return 0
+  fi
+  if [[ "$host_os" != "Linux" ]]; then
+    return 0
+  fi
+  if [[ "$operation" == "stop" ]]; then
+    return 0
+  fi
+  if [[ ! -r /proc/meminfo ]]; then
+    return 0
+  fi
+
+  local min_ram_mb="${SEKANT_MIN_RAM_MB:-3072}"
+  local min_ram_with_swap_mb="${SEKANT_MIN_RAM_WITH_SWAP_MB:-2048}"
+  local min_swap_mb="${SEKANT_MIN_SWAP_MB:-2048}"
+  local mem_total_kb swap_total_kb mem_total_mb swap_total_mb
+
+  mem_total_kb="$(read_meminfo_kb "MemTotal")"
+  swap_total_kb="$(read_meminfo_kb "SwapTotal")"
+  [[ "$mem_total_kb" =~ ^[0-9]+$ ]] || return 0
+  [[ "$swap_total_kb" =~ ^[0-9]+$ ]] || swap_total_kb=0
+
+  mem_total_mb=$(( mem_total_kb / 1024 ))
+  swap_total_mb=$(( swap_total_kb / 1024 ))
+
+  preflight_note "Host resources detected: ${mem_total_mb} MiB RAM, ${swap_total_mb} MiB swap."
+
+  if (( mem_total_mb >= min_ram_mb )); then
+    return 0
+  fi
+  if (( mem_total_mb >= min_ram_with_swap_mb && swap_total_mb >= min_swap_mb )); then
+    return 0
+  fi
+
+  echo -e "${CYAN}${BOLD}Error:${RESET} Host resource preflight failed." >&2
+  echo "Detected ${mem_total_mb} MiB RAM and ${swap_total_mb} MiB swap." >&2
+  echo "This stack is likely to make a small EC2 Linux instance unresponsive during startup." >&2
+  echo "Recommended minimum before running ${script_display_name}:" >&2
+  echo "  - ${min_ram_mb} MiB RAM, or" >&2
+  echo "  - ${min_ram_with_swap_mb} MiB RAM plus at least ${min_swap_mb} MiB swap" >&2
+  echo "Suggested recovery on EC2:" >&2
+  echo "  sudo fallocate -l 2G /swapfile" >&2
+  echo "  sudo chmod 600 /swapfile" >&2
+  echo "  sudo mkswap /swapfile" >&2
+  echo "  sudo swapon /swapfile" >&2
+  echo "  echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab" >&2
+  echo "If you still want to force startup, set SEKANT_SKIP_HOST_RESOURCE_CHECK=1." >&2
+  exit 1
+}
+
 prompt_non_empty() {
   local label="$1"
   local value=""
@@ -2001,6 +2059,8 @@ if (( docker_ok != 1 )); then
   fi
   exit 1
 fi
+
+linux_host_resource_preflight
 
 # Per-service platform pinning handles mixed-arch images more safely than a
 # global override, so clear any inherited default first.
