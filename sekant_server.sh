@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.2.1"
+SEKANT_DASHBOARD_VERSION="1.2.2"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -1345,6 +1345,58 @@ normalize_hostname() {
   printf "%s" "$raw_hostname"
 }
 
+find_existing_cert_file() {
+  local certs_dir="${root_dir}/certs"
+  local cert_file=""
+  local key_file=""
+  local pair=""
+
+  for pair in \
+    "tls.crt tls.key" \
+    "cert.pem key.pem" \
+    "fullchain.pem privkey.pem"; do
+    cert_file="${pair%% *}"
+    key_file="${pair##* }"
+    if [[ -f "${certs_dir}/${cert_file}" && -f "${certs_dir}/${key_file}" ]]; then
+      printf "%s" "${certs_dir}/${cert_file}"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+extract_hostname_from_cert() {
+  local cert_path="$1"
+  local san_output=""
+  local candidate=""
+
+  if [[ -z "$cert_path" || ! -f "$cert_path" ]]; then
+    return 1
+  fi
+  if ! command -v openssl >/dev/null 2>&1; then
+    return 1
+  fi
+
+  san_output="$(openssl x509 -in "$cert_path" -noout -ext subjectAltName 2>/dev/null || true)"
+  while IFS= read -r candidate; do
+    candidate="$(normalize_hostname "$candidate")"
+    if [[ -n "$candidate" && "$candidate" != \** ]]; then
+      printf "%s" "$candidate"
+      return 0
+    fi
+  done < <(printf "%s\n" "$san_output" | grep -oE 'DNS:[^,[:space:]]+' | sed 's/^DNS://')
+
+  candidate="$(openssl x509 -in "$cert_path" -noout -subject 2>/dev/null | sed -nE 's/.*CN[[:space:]]*=[[:space:]]*([^,/]+).*/\1/p' | head -n 1)"
+  candidate="$(normalize_hostname "$candidate")"
+  if [[ -n "$candidate" && "$candidate" != \** ]]; then
+    printf "%s" "$candidate"
+    return 0
+  fi
+
+  return 1
+}
+
 write_env_value() {
   local key="$1"
   local value="$2"
@@ -2215,6 +2267,11 @@ dashboard_https_port="$dashboard_https_port_default"
 ingest_port="$ingest_port_default"
 ingest_protocol="https"
 clickhouse_retention_days="$clickhouse_retention_days_default"
+existing_cert_file="$(find_existing_cert_file || true)"
+existing_cert_hostname=""
+if [[ -n "$existing_cert_file" ]]; then
+  existing_cert_hostname="$(extract_hostname_from_cert "$existing_cert_file" || true)"
+fi
 
 can_reuse_env=0
 if (( force_reconfigure == 0 )); then
@@ -2228,7 +2285,12 @@ if (( force_reconfigure == 0 && can_reuse_env == 1 )); then
   echo -e "${CYAN}${BOLD}Reusing existing setup values from .env (use --reconfigure to change).${RESET}"
   public_hostname="$(normalize_hostname "$(read_env_value "CADDY_DOMAIN")")"
   if [[ -z "$public_hostname" ]]; then
-    public_hostname="localhost"
+    if [[ -n "$existing_cert_hostname" ]]; then
+      public_hostname="$existing_cert_hostname"
+      echo -e "${CYAN}${BOLD}Using hostname from existing certificate:${RESET} ${public_hostname}"
+    else
+      public_hostname="localhost"
+    fi
   fi
   clickhouse_mode="$(read_env_value "CLICKHOUSE_SETUP_MODE")"
   clickhouse_mode="${clickhouse_mode:-local}"
@@ -2254,7 +2316,12 @@ if (( force_reconfigure == 0 && can_reuse_env == 1 )); then
 else
   echo ""
   echo -e "${CYAN}${BOLD}Hostname & Ports${RESET}"
-  public_hostname="$(normalize_hostname "$(prompt_with_default_text "Domain / Hostname for Management Console (default: localhost) : " "localhost")")"
+  if [[ -n "$existing_cert_hostname" ]]; then
+    public_hostname="$existing_cert_hostname"
+    echo -e "Domain / Hostname for Management Console : ${public_hostname} ${DIM}(from existing certificate)${RESET}"
+  else
+    public_hostname="$(normalize_hostname "$(prompt_with_default_text "Domain / Hostname for Management Console (default: localhost) : " "localhost")")"
+  fi
   dashboard_https_port="$(prompt_port_with_default_text "Dashboard HTTPS host port (default: ${dashboard_https_port_default}) : " "$dashboard_https_port_default")"
   ingest_port="$(prompt_port_with_default_text "Event Logging Port (default ${ingest_port_default}) : " "$ingest_port_default")"
 
@@ -2268,6 +2335,11 @@ else
   echo -e "${CYAN}${BOLD}Database${RESET}"
   clickhouse_mode="$(select_clickhouse_mode)"
   clickhouse_retention_days="$(prompt_retention_days_with_default_text "Data Retention Duration (in days) (default: ${clickhouse_retention_days_default}) : " "$clickhouse_retention_days_default")"
+fi
+
+if [[ -n "$existing_cert_hostname" && "$public_hostname" != "$existing_cert_hostname" ]]; then
+  echo -e "${CYAN}${BOLD}Warning:${RESET} Installed certificate hostname (${existing_cert_hostname}) does not match configured dashboard hostname (${public_hostname})." >&2
+  echo "Use the certificate hostname in the browser, or re-run ${script_display_name} --install --reconfigure and set the hostname to ${existing_cert_hostname}." >&2
 fi
 
 write_env_value "CADDY_DOMAIN" "$public_hostname"

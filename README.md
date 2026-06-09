@@ -21,7 +21,7 @@ cd sekant
 Run this in the empty folder you created above. The `.` at the end clones the repository into the current directory.
 
 ```bash
-git clone --branch v1.2.1 --depth 1 https://github.com/rishi-sekantsec/management-console .
+git clone --branch v1.2.2 --depth 1 https://github.com/rishi-sekantsec/management-console .
 ```
 
 ## 2) Start the Installer
@@ -35,14 +35,14 @@ bash sekant_server.sh
 ### System Settings
 
 - Log in to the console using the admin credentials.
-- Navigate to `Admin > System > Settings`.
+- Navigate to `Admin > System > Console Settings`.
 - In the `Security Settings` tab, set the `CUSTOMER KEY` if one is available.
 - In the `System Settings` tab, set the display timezone.
 - In `System Settings`, ensure `Default Security Dashboard Automatic Refresh Interval` is set to `300`.
 
 ### Individual Extension Testing
 
-- Navigate to `Admin > System > Settings`.
+- Navigate to `Admin > System > Console Settings`.
 - Open the `Security Settings` tab.
 - Copy the `Event Logging URL` and `Auth Token`.
 - On the test device, install the Sekant browser extension from the browser web store.

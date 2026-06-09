@@ -138,4 +138,10 @@ echo "Created files:"
 echo "  ${certs_dir}/cert.pem"
 echo "  ${certs_dir}/key.pem"
 echo
+echo "Important:"
+echo "  - This certificate is valid for ${domain} only."
+echo "  - Open the dashboard using https://${domain} (or that hostname with your custom HTTPS port)."
+echo "  - Do not use the EC2 public IP in the browser after installing this cert; browsers will show a certificate mismatch."
+echo "  - If the stack was previously configured with a different hostname or the raw IP, re-run bash sekant_server.sh --install --reconfigure and set the hostname to ${domain}."
+echo
 echo "Restart the stack to have Caddy pick up the new certificate files."
