@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.2.5"
+SEKANT_DASHBOARD_VERSION="1.2.6"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -380,7 +380,6 @@ detect_repo_prefix() {
 
 default_distribution_manifest() {
   cat <<'EOF'
-distribution-manifest.txt
 .gitignore
 sekant_server.sh
 docker-compose.yml
