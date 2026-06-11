@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.2.4"
+SEKANT_DASHBOARD_VERSION="1.2.5"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -169,6 +169,13 @@ normalize_version() {
   printf "%s" "$v"
 }
 
+trim_whitespace() {
+  local raw_text="$1"
+  raw_text="${raw_text#"${raw_text%%[![:space:]]*}"}"
+  raw_text="${raw_text%"${raw_text##*[![:space:]]}"}"
+  printf "%s" "$raw_text"
+}
+
 semver_gt() {
   local a b
   a="$(normalize_version "${1:-}")"
@@ -318,18 +325,36 @@ github_highest_semver_tag_via_git() {
 github_latest_tag() {
   github_latest_tag_value=""
   github_candidate_tag=""
+
+  local best_tag=""
+  local best_semver=""
+
+  local candidate_tag=""
+  local candidate_semver=""
+
   if github_latest_release_tag; then
-    github_latest_tag_value="$github_candidate_tag"
+    candidate_tag="$github_candidate_tag"
+    candidate_semver="$(tag_semver "$candidate_tag")"
+    if [[ -n "$candidate_semver" ]]; then
+      best_tag="$candidate_tag"
+      best_semver="$candidate_semver"
+    fi
+  fi
+
+  if github_highest_semver_tag || github_highest_semver_tag_via_git; then
+    candidate_tag="$github_candidate_tag"
+    candidate_semver="$(tag_semver "$candidate_tag")"
+    if [[ -n "$candidate_semver" ]] && { [[ -z "$best_semver" ]] || semver_gt "$candidate_semver" "$best_semver"; }; then
+      best_tag="$candidate_tag"
+      best_semver="$candidate_semver"
+    fi
+  fi
+
+  if [[ -n "$best_tag" ]]; then
+    github_latest_tag_value="$best_tag"
     return 0
   fi
-  if github_highest_semver_tag; then
-    github_latest_tag_value="$github_candidate_tag"
-    return 0
-  fi
-  if github_highest_semver_tag_via_git; then
-    github_latest_tag_value="$github_candidate_tag"
-    return 0
-  fi
+
   return 1
 }
 
@@ -515,8 +540,36 @@ apply_update_from_github() {
   done <<< "$manifest_text"
 
   if (( ${#manifest_sources[@]} == 0 )); then
-    echo -e "${CYAN}${BOLD}Error:${RESET} Upgrade manifest is empty for ${tag}." >&2
-    return 1
+    manifest_text="$(default_distribution_manifest)"
+    manifest_sources=()
+    manifest_dests=()
+
+    while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
+      raw_line="$(trim_whitespace "$(printf "%s" "$raw_line" | tr -d '\r')")"
+      if [[ -z "$raw_line" || "$raw_line" == \#* ]]; then
+        continue
+      fi
+
+      source_path="$raw_line"
+      dest_path="$raw_line"
+      if [[ "$raw_line" == *"|"* ]]; then
+        source_path="$(trim_whitespace "${raw_line%%|*}")"
+        dest_path="$(trim_whitespace "${raw_line#*|}")"
+      fi
+
+      if ! is_safe_relative_path "$source_path" || ! is_safe_relative_path "$dest_path"; then
+        echo -e "${CYAN}${BOLD}Error:${RESET} Invalid upgrade manifest entry: ${raw_line}" >&2
+        return 1
+      fi
+
+      manifest_sources+=("$source_path")
+      manifest_dests+=("$dest_path")
+    done <<< "$manifest_text"
+
+    if (( ${#manifest_sources[@]} == 0 )); then
+      echo -e "${CYAN}${BOLD}Error:${RESET} Upgrade manifest is empty for ${tag}." >&2
+      return 1
+    fi
   fi
 
   local i
@@ -1303,13 +1356,6 @@ ensure_clickhouse_retention_ttl() {
 
 # Ensure all scripts have execute permissions, skipping large directories
 find "${root_dir}" \( -name node_modules -o -name .git -o -name .next \) -prune -o -name "*.sh" -exec chmod +x {} +
-
-trim_whitespace() {
-  local raw_text="$1"
-  raw_text="${raw_text#"${raw_text%%[![:space:]]*}"}"
-  raw_text="${raw_text%"${raw_text##*[![:space:]]}"}"
-  printf "%s" "$raw_text"
-}
 
 sanitize_compose_project_name() {
   local raw_name="$1"
