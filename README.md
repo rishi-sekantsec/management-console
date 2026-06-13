@@ -24,7 +24,7 @@ cd sekant
 Run this in the empty folder you created above. The `.` at the end clones the repository into the current directory.
 
 ```bash
-git clone --branch v1.2.7 --depth 1 https://github.com/rishi-sekantsec/management-console .
+git clone --branch v1.3.0 --depth 1 https://github.com/rishi-sekantsec/management-console .
 ```
 
 ## 2) Start the Installer

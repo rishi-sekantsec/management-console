@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.2.7"
+SEKANT_DASHBOARD_VERSION="1.3.0"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -2366,11 +2366,8 @@ seed_admin_password_default="admin@12345"
 seed_admin_email=""
 seed_admin_password="$seed_admin_password_default"
 dashboard_https_port_default="443"
-ingest_port_default="31415"
 clickhouse_retention_days_default="730"
 dashboard_https_port="$dashboard_https_port_default"
-ingest_port="$ingest_port_default"
-ingest_protocol="https"
 clickhouse_retention_days="$clickhouse_retention_days_default"
 existing_cert_file="$(find_existing_cert_file || true)"
 existing_cert_hostname=""
@@ -2410,8 +2407,6 @@ if (( force_reconfigure == 0 && can_reuse_env == 1 )); then
   seed_admin_password="${seed_admin_password:-$seed_admin_password_default}"
   dashboard_https_port="$(read_env_value "DASHBOARD_HTTPS_PORT")"
   dashboard_https_port="${dashboard_https_port:-$dashboard_https_port_default}"
-  ingest_port="$(read_env_value "INGEST_PORT")"
-  ingest_port="${ingest_port:-$ingest_port_default}"
   clickhouse_retention_days="$(read_env_value "CLICKHOUSE_RETENTION_DAYS")"
   clickhouse_retention_days="${clickhouse_retention_days:-$clickhouse_retention_days_default}"
   if [[ "$seed_admin_password" == "$seed_admin_password_default" ]]; then
@@ -2428,7 +2423,6 @@ else
     public_hostname="$(normalize_hostname "$(prompt_with_default_text "Domain / Hostname for Management Console (default: localhost) : " "localhost")")"
   fi
   dashboard_https_port="$(prompt_port_with_default_text "Dashboard HTTPS host port (default: ${dashboard_https_port_default}) : " "$dashboard_https_port_default")"
-  ingest_port="$(prompt_port_with_default_text "Event Logging Port (default ${ingest_port_default}) : " "$ingest_port_default")"
 
   echo ""
   echo -e "${CYAN}${BOLD}Admin Credentials${RESET}"
@@ -2456,19 +2450,11 @@ if [[ "$dashboard_https_port" != "443" ]]; then
 fi
 write_env_value "PUBLIC_URL" "$public_url"
 
-write_env_value "INGEST_DOMAIN" "$public_hostname"
 write_env_value "KEYCLOAK_ADMIN" "$seed_admin_username"
 write_env_value "KEYCLOAK_ADMIN_EMAIL" "$seed_admin_email"
 write_env_value "SEED_ADMIN_PASSWORD" "$seed_admin_password"
 write_env_value "KEYCLOAK_HOSTNAME" "$public_hostname"
-write_env_value "INGEST_PORT" "$ingest_port"
-write_env_value "FLUENT_BIT_INPUT_PORT" "$ingest_port"
 write_env_value "CLICKHOUSE_RETENTION_DAYS" "$clickhouse_retention_days"
-
-if [[ "$dashboard_https_port" == "$ingest_port" ]]; then
-  echo -e "${CYAN}${BOLD}Error:${RESET} Event logging port must be different from dashboard HTTPS port." >&2
-  exit 1
-fi
 
 has_existing_runtime=0
 if has_running_sekant_deployment; then
@@ -2522,13 +2508,9 @@ fi
 
 if (( has_existing_volumes == 0 && has_existing_runtime == 0 )); then
   assert_port_free "$dashboard_https_port" "Dashboard HTTPS"
-  assert_port_free "$ingest_port" "Ingestion HTTPS"
 else
   if is_port_in_use "$dashboard_https_port"; then
     echo -e "${CYAN}${BOLD}Notice:${RESET} Dashboard HTTPS port ${dashboard_https_port} is already in use on 127.0.0.1. This is expected during upgrades if the existing Sekant deployment is running." >&2
-  fi
-  if is_port_in_use "$ingest_port"; then
-    echo -e "${CYAN}${BOLD}Notice:${RESET} Event logging port ${ingest_port} is already in use on 127.0.0.1. This is expected during upgrades if the existing Sekant deployment is running." >&2
   fi
 fi
 

@@ -20,8 +20,6 @@ services:
       KEYCLOAK_ADMIN_EMAIL: ${KEYCLOAK_ADMIN_EMAIL:-admin@sekant.local}
       SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-admin@12345}
       CH_INGEST_USER: ${CH_INGEST_USER:-ch_ingest}
-      INGEST_DOMAIN: ${INGEST_DOMAIN:-localhost}
-      INGEST_PORT: ${INGEST_PORT:-31415}
       FLUENT_BIT_INPUT_PORT: ${FLUENT_BIT_INPUT_PORT:-31415}
       GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
       GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
@@ -52,13 +50,10 @@ services:
       - ndots:0
     environment:
       CADDY_DOMAIN: ${CADDY_DOMAIN:-localhost}
-      INGEST_DOMAIN: ${INGEST_DOMAIN:-localhost}
-      INGEST_PORT: ${INGEST_PORT:-31415}
       FLUENT_BIT_INPUT_PORT: ${FLUENT_BIT_INPUT_PORT:-31415}
     ports:
       - "${DASHBOARD_HTTP_PORT:-80}:80"
       - "${DASHBOARD_HTTPS_PORT:-443}:443"
-      - "${INGEST_PORT:-31415}:${INGEST_PORT:-31415}"
     volumes:
       - sekant_secrets:/run/secrets:ro
       - caddy_data:/data
@@ -116,8 +111,6 @@ services:
     restart: unless-stopped
     environment:
       PUBLIC_URL: ${PUBLIC_URL:-https://localhost}
-      INGEST_DOMAIN: ${INGEST_DOMAIN:-localhost}
-      INGEST_PORT: ${INGEST_PORT:-31415}
       KEYCLOAK_URL: ${KEYCLOAK_URL:-http://keycloak:8080}
       KEYCLOAK_REALM: ${KEYCLOAK_REALM:-sekant}
       KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
