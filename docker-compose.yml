@@ -111,6 +111,7 @@ services:
     restart: unless-stopped
     environment:
       PUBLIC_URL: ${PUBLIC_URL:-https://localhost}
+      DASHBOARD_HTTP_PORT: ${DASHBOARD_HTTP_PORT:-80}
       KEYCLOAK_URL: ${KEYCLOAK_URL:-http://keycloak:8080}
       KEYCLOAK_REALM: ${KEYCLOAK_REALM:-sekant}
       KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
