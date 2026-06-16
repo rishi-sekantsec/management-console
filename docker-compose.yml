@@ -18,7 +18,7 @@ services:
       PUBLIC_URL: ${PUBLIC_URL:-https://localhost}
       KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
       KEYCLOAK_ADMIN_EMAIL: ${KEYCLOAK_ADMIN_EMAIL:-admin@sekant.local}
-      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-admin@12345}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:?SEED_ADMIN_PASSWORD is required}
       CH_INGEST_USER: ${CH_INGEST_USER:-ch_ingest}
       FLUENT_BIT_INPUT_PORT: ${FLUENT_BIT_INPUT_PORT:-31415}
       GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
@@ -43,7 +43,7 @@ services:
       - sekant-net
 
   caddy:
-    image: caddy:2-alpine
+    image: caddy:2.11.4-alpine
     container_name: sekant-caddy
     restart: unless-stopped
     dns_opt:
@@ -181,7 +181,7 @@ services:
       KC_PROXY: edge
       QUARKUS_HTTP_PROXY_ALLOW_X_FORWARDED: "true"
       QUARKUS_HTTP_PROXY_ALLOW_FORWARDED: "false"
-    entrypoint: ["/bin/sh", "-c", "export KC_DB_PASSWORD=$$(cat /opt/keycloak/data/import/postgres_password) && export KEYCLOAK_ADMIN_PASSWORD=$$(cat /opt/keycloak/data/import/keycloak_admin_password) && export PUBLIC_URL=$${PUBLIC_URL:-https://localhost} && export PUBLIC_URL=$${PUBLIC_URL%,} && exec /opt/keycloak/bin/kc.sh start-dev --import-realm --proxy=edge --hostname-url=$${PUBLIC_URL} --hostname-strict=false"]
+    entrypoint: ["/bin/sh", "-c", "export KC_DB_PASSWORD=$$(cat /opt/keycloak/data/import/postgres_password) && export KEYCLOAK_ADMIN_PASSWORD=$$(cat /opt/keycloak/data/import/keycloak_admin_password) && export PUBLIC_URL=$${PUBLIC_URL:-https://localhost} && export PUBLIC_URL=$${PUBLIC_URL%,} && exec /opt/keycloak/bin/kc.sh start --http-enabled=true --import-realm --proxy=edge --hostname=$${PUBLIC_URL} --hostname-strict=false"]
     expose:
       - "8080"
     volumes:
@@ -305,7 +305,7 @@ services:
       - sekant-net
 
   fluent-bit:
-    image: fluent/fluent-bit:latest
+    image: fluent/fluent-bit:5.0.7
     container_name: sekant-fluent-bit
     restart: unless-stopped
     entrypoint: ["/fluent-bit/bin/fluent-bit", "-c", "/run/secrets/fluent-bit.conf"]
@@ -326,7 +326,7 @@ services:
       - sekant-net
 
   readiness:
-    image: alpine:latest
+    image: alpine:3.24.1
     container_name: sekant-readiness
     restart: unless-stopped
     depends_on:

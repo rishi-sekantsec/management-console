@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.3.4"
+SEKANT_DASHBOARD_VERSION="1.3.5"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -1964,6 +1964,30 @@ prompt_secret_with_default() {
   fi
 }
 
+is_valid_admin_password() {
+  local value="$1"
+  [[ ${#value} -ge 8 ]] || return 1
+  [[ "$value" =~ [a-z] ]] || return 1
+  [[ "$value" =~ [A-Z] ]] || return 1
+  [[ "$value" =~ [0-9] ]] || return 1
+  [[ "$value" =~ [^[:alnum:][:space:]] ]] || return 1
+}
+
+prompt_admin_password_required() {
+  local prompt_text="$1"
+  local value=""
+  while true; do
+    read -r -s -p "${prompt_text}" value
+    printf "\n" >&2
+    value="$(trim_whitespace "$value")"
+    if is_valid_admin_password "$value"; then
+      printf "%s" "$value"
+      return 0
+    fi
+    echo "Password must be at least 8 characters and include at least one lowercase letter, one uppercase letter, one number, and one special character." >&2
+  done
+}
+
 is_valid_email() {
   local value="$1"
   [[ "$value" =~ ^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$ ]]
@@ -1975,6 +1999,24 @@ prompt_email_required() {
   while true; do
     read -r -p "${label}" value
     value="$(trim_whitespace "$value")"
+    if is_valid_email "$value"; then
+      printf "%s" "$value"
+      return 0
+    fi
+    echo "Please enter a valid email address." >&2
+  done
+}
+
+prompt_email_with_default_required() {
+  local label="$1"
+  local default_value="$2"
+  local value=""
+  while true; do
+    read -r -p "${label} [default: ${default_value}]: " value
+    value="$(trim_whitespace "$value")"
+    if [[ -z "$value" ]]; then
+      value="$default_value"
+    fi
     if is_valid_email "$value"; then
       printf "%s" "$value"
       return 0
@@ -2086,24 +2128,43 @@ render_menu_option() {
 }
 
 select_clickhouse_mode() {
-  local options=("Local" "Remote")
+  local default_mode="${1:-local}"
+  local options=("Locally on Disk" "Remote S3 Bucket")
   local values=("local" "remote")
   local selected=0
   local key=""
   local escape_tail=""
   local option_count="${#options[@]}"
 
+  if [[ "$default_mode" == "remote" ]]; then
+    selected=1
+  fi
+
   if [[ ! -t 0 || ! -t 2 ]]; then
     local answer=""
+    local default_label="Locally on Disk"
+    if [[ "$default_mode" == "remote" ]]; then
+      default_label="Remote S3 Bucket"
+    fi
     while true; do
-      read -r -p "Database setup [local/remote] (default: local): " answer
+      read -r -p "Database setup [Locally on Disk/Remote S3 Bucket] (default: ${default_label}): " answer
       answer="$(printf "%s" "$answer" | tr '[:upper:]' '[:lower:]')"
       answer="$(trim_whitespace "$answer")"
-      if [[ -z "$answer" || "$answer" == "local" || "$answer" == "remote" ]]; then
-        printf "%s" "${answer:-local}"
-        return 0
-      fi
-      echo "Please enter 'local' or 'remote'." >&2
+      case "$answer" in
+        "")
+          printf "%s" "$default_mode"
+          return 0
+          ;;
+        "local"|"locally on disk")
+          printf "%s" "local"
+          return 0
+          ;;
+        "remote"|"remote s3 bucket")
+          printf "%s" "remote"
+          return 0
+          ;;
+      esac
+      echo "Please enter 'Locally on Disk' or 'Remote S3 Bucket'." >&2
     done
   fi
 
@@ -2480,7 +2541,7 @@ resolve_helper_image() {
     printf "%s" "dashboard-init-secrets:latest"
     return 0
   fi
-  printf "%s" "alpine:latest"
+  printf "%s" "alpine:3.24.1"
 }
 
 resolve_init_secrets_image() {
@@ -2528,9 +2589,8 @@ if (( has_existing_volumes == 1 )); then
 fi
 
 seed_admin_username="admin"
-seed_admin_password_default="admin@12345"
 seed_admin_email=""
-seed_admin_password="$seed_admin_password_default"
+seed_admin_password=""
 dashboard_https_port_default="443"
 clickhouse_retention_days_default="730"
 dashboard_https_port="$dashboard_https_port_default"
@@ -2541,10 +2601,24 @@ if [[ -n "$existing_cert_file" ]]; then
   existing_cert_hostname="$(extract_hostname_from_cert "$existing_cert_file" || true)"
 fi
 
+configured_hostname_default="$(normalize_hostname "$(read_env_value "CADDY_DOMAIN")")"
+if [[ -z "$configured_hostname_default" ]]; then
+  configured_hostname_default="${existing_cert_hostname:-localhost}"
+fi
+configured_dashboard_https_port_default="$(trim_whitespace "$(read_env_value "DASHBOARD_HTTPS_PORT")")"
+configured_dashboard_https_port_default="${configured_dashboard_https_port_default:-$dashboard_https_port_default}"
+configured_seed_admin_email_default="$(trim_whitespace "$(read_env_value "KEYCLOAK_ADMIN_EMAIL")")"
+configured_seed_admin_email_default="${configured_seed_admin_email_default:-admin@sekant.local}"
+configured_clickhouse_mode_default="$(trim_whitespace "$(read_env_value "CLICKHOUSE_SETUP_MODE")")"
+configured_clickhouse_mode_default="${configured_clickhouse_mode_default:-local}"
+configured_clickhouse_retention_days_default="$(trim_whitespace "$(read_env_value "CLICKHOUSE_RETENTION_DAYS")")"
+configured_clickhouse_retention_days_default="${configured_clickhouse_retention_days_default:-$clickhouse_retention_days_default}"
+
 can_reuse_env=0
 if (( force_reconfigure == 0 )); then
   seed_admin_email_probe="$(trim_whitespace "$(read_env_value "KEYCLOAK_ADMIN_EMAIL")")"
-  if [[ -n "$seed_admin_email_probe" ]]; then
+  seed_admin_password_probe="$(trim_whitespace "$(read_env_value "SEED_ADMIN_PASSWORD")")"
+  if [[ -n "$seed_admin_email_probe" ]] && is_valid_admin_password "$seed_admin_password_probe"; then
     can_reuse_env=1
   fi
 fi
@@ -2570,36 +2644,41 @@ if (( force_reconfigure == 0 && can_reuse_env == 1 )); then
     exit 1
   fi
   seed_admin_password="$(read_env_value "SEED_ADMIN_PASSWORD")"
-  seed_admin_password="${seed_admin_password:-$seed_admin_password_default}"
+  seed_admin_password="$(trim_whitespace "$seed_admin_password")"
+  if [[ -z "$seed_admin_password" ]]; then
+    echo -e "${CYAN}${BOLD}Error:${RESET} SEED_ADMIN_PASSWORD is required but missing in .env." >&2
+    echo "Run with --reconfigure to set the seeded admin password." >&2
+    exit 1
+  fi
+  if ! is_valid_admin_password "$seed_admin_password"; then
+    echo -e "${CYAN}${BOLD}Error:${RESET} SEED_ADMIN_PASSWORD in .env does not meet password complexity requirements." >&2
+    echo "It must be at least 8 characters and include at least one lowercase letter, one uppercase letter, one number, and one special character." >&2
+    echo "Run with --reconfigure to update the seeded admin password." >&2
+    exit 1
+  fi
   dashboard_https_port="$(read_env_value "DASHBOARD_HTTPS_PORT")"
   dashboard_https_port="${dashboard_https_port:-$dashboard_https_port_default}"
   clickhouse_retention_days="$(read_env_value "CLICKHOUSE_RETENTION_DAYS")"
   clickhouse_retention_days="${clickhouse_retention_days:-$clickhouse_retention_days_default}"
-  if [[ "$seed_admin_password" == "$seed_admin_password_default" ]]; then
-    echo -e "${CYAN}${BOLD}Note:${RESET} Seeded admin password changes are not applied via startup when reusing existing volumes."
-    echo "Use the dashboard UI to reset the seeded admin password, or remove existing volumes for a fresh setup."
-  fi
 else
   echo ""
   echo -e "${CYAN}${BOLD}Hostname & Ports${RESET}"
   if [[ -n "$existing_cert_hostname" ]]; then
-    public_hostname="$existing_cert_hostname"
-    echo -e "Domain / Hostname for Management Console : ${public_hostname} ${DIM}(from existing certificate)${RESET}"
-  else
-    public_hostname="$(normalize_hostname "$(prompt_with_default_text "Domain / Hostname for Management Console (default: localhost) : " "localhost")")"
+    echo -e "Existing certificate hostname : ${existing_cert_hostname}"
   fi
-  dashboard_https_port="$(prompt_port_with_default_text "Dashboard HTTPS host port (default: ${dashboard_https_port_default}) : " "$dashboard_https_port_default")"
+  public_hostname="$(normalize_hostname "$(prompt_with_default_text "Domain / Hostname for Management Console (default: ${configured_hostname_default}) : " "$configured_hostname_default")")"
+  dashboard_https_port="$(prompt_port_with_default_text "Dashboard HTTPS host port (default: ${configured_dashboard_https_port_default}) : " "$configured_dashboard_https_port_default")"
 
   echo ""
   echo -e "${CYAN}${BOLD}Admin Credentials${RESET}"
   echo -e "Admin Username : ${seed_admin_username}"
-  seed_admin_email="$(prompt_email_required "Admin Email : ")"
-  seed_admin_password="$(prompt_secret_with_default_text "Admin Password (default : ${seed_admin_password_default}) : " "$seed_admin_password_default")"
+  seed_admin_email="$(prompt_email_with_default_required "Admin Email :" "$configured_seed_admin_email_default")"
+  seed_admin_password="$(prompt_admin_password_required "Admin Password : ")"
 
   echo ""
   echo -e "${CYAN}${BOLD}Database${RESET}"
-  clickhouse_mode="$(select_clickhouse_mode)"
-  clickhouse_retention_days="$(prompt_retention_days_with_default_text "Data Retention Duration (in days) (default: ${clickhouse_retention_days_default}) : " "$clickhouse_retention_days_default")"
+  clickhouse_mode="$(select_clickhouse_mode "$configured_clickhouse_mode_default")"
+  clickhouse_retention_days="$(prompt_retention_days_with_default_text "Data Retention Duration (in days) (default: ${configured_clickhouse_retention_days_default}) : " "$configured_clickhouse_retention_days_default")"
 fi
 
 if [[ -n "$existing_cert_hostname" && "$public_hostname" != "$existing_cert_hostname" ]]; then
