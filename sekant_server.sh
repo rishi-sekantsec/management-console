@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.4.0"
+SEKANT_DASHBOARD_VERSION="1.4.1"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -1440,15 +1440,37 @@ normalize_hostname() {
   raw_hostname="${raw_hostname%\"}"
   raw_hostname="${raw_hostname#\'}"
   raw_hostname="${raw_hostname%\'}"
-  raw_hostname="${raw_hostname#http://}"
-  raw_hostname="${raw_hostname#https://}"
+  raw_hostname="$(printf "%s" "$raw_hostname" | sed -E 's#^[A-Za-z][A-Za-z0-9+.-]*:/+##')"
   raw_hostname="${raw_hostname%%/*}"
   raw_hostname="${raw_hostname%%\?*}"
+  raw_hostname="${raw_hostname%%\#*}"
   raw_hostname="${raw_hostname%%,*}"
   raw_hostname="$(trim_whitespace "$raw_hostname")"
   raw_hostname="${raw_hostname%,}"
   raw_hostname="$(printf "%s" "$raw_hostname" | sed -E 's/:[0-9]+$//')"
+  raw_hostname="$(printf "%s" "$raw_hostname" | tr '[:upper:]' '[:lower:]')"
+  case "$raw_hostname" in
+    ""|http|https)
+      printf "%s" ""
+      return 0
+      ;;
+  esac
   printf "%s" "$raw_hostname"
+}
+
+build_public_url() {
+  local hostname port
+  hostname="$(normalize_hostname "$1")"
+  port="$(trim_whitespace "$2")"
+  if [[ -z "$hostname" ]]; then
+    printf "%s" ""
+    return 0
+  fi
+  if [[ -z "$port" || "$port" == "443" ]]; then
+    printf "https://%s" "$hostname"
+    return 0
+  fi
+  printf "https://%s:%s" "$hostname" "$port"
 }
 
 find_existing_cert_file() {
@@ -2722,12 +2744,18 @@ if [[ -n "$existing_cert_hostname" && "$public_hostname" != "$existing_cert_host
   echo "Use the certificate hostname in the browser, or re-run ${script_display_name} --install --reconfigure and set the hostname to ${existing_cert_hostname}." >&2
 fi
 
+if [[ -z "$public_hostname" ]]; then
+  echo -e "${CYAN}${BOLD}Error:${RESET} Invalid dashboard hostname. Enter only a hostname or URL that contains a real host value." >&2
+  exit 1
+fi
+
 write_env_value "CADDY_DOMAIN" "$public_hostname"
 write_env_value "DASHBOARD_HTTPS_PORT" "$dashboard_https_port"
 
-public_url="https://${public_hostname}"
-if [[ "$dashboard_https_port" != "443" ]]; then
-  public_url="https://${public_hostname}:${dashboard_https_port}"
+public_url="$(build_public_url "$public_hostname" "$dashboard_https_port")"
+if [[ -z "$public_url" ]]; then
+  echo -e "${CYAN}${BOLD}Error:${RESET} Failed to derive PUBLIC_URL from hostname ${public_hostname}." >&2
+  exit 1
 fi
 write_env_value "PUBLIC_URL" "$public_url"
 

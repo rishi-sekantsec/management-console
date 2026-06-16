@@ -178,10 +178,9 @@ services:
       KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
       KC_DB_USERNAME: ${POSTGRES_USER:-sekant}
       KC_HOSTNAME_STRICT: "false"
-      KC_PROXY: edge
-      QUARKUS_HTTP_PROXY_ALLOW_X_FORWARDED: "true"
-      QUARKUS_HTTP_PROXY_ALLOW_FORWARDED: "false"
-    entrypoint: ["/bin/sh", "-c", "export KC_DB_PASSWORD=$$(cat /opt/keycloak/data/import/postgres_password) && export KEYCLOAK_ADMIN_PASSWORD=$$(cat /opt/keycloak/data/import/keycloak_admin_password) && export PUBLIC_URL=$${PUBLIC_URL:-https://localhost} && export PUBLIC_URL=$${PUBLIC_URL%,} && exec /opt/keycloak/bin/kc.sh start --http-enabled=true --import-realm --proxy=edge --hostname=$${PUBLIC_URL} --hostname-strict=false"]
+      KC_PROXY_HEADERS: xforwarded
+      KC_HTTP_ENABLED: "true"
+    entrypoint: ["/bin/sh", "-c", "export KC_DB_PASSWORD=$$(cat /opt/keycloak/data/import/postgres_password) && export KEYCLOAK_ADMIN_PASSWORD=$$(cat /opt/keycloak/data/import/keycloak_admin_password) && export PUBLIC_URL=$${PUBLIC_URL:-https://localhost} && export PUBLIC_URL=$$(printf '%s' \"$$PUBLIC_URL\" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$$//' | sed -E 's/^`//; s/`$$//; s/^\"//; s/\"$$//; s/^'\"'\"'//; s/'\"'\"'$$//' | sed -E 's/,+$$//' ) && export PUBLIC_URL=$${PUBLIC_URL%/} && exec /opt/keycloak/bin/kc.sh start --import-realm --proxy-headers=xforwarded --hostname=$${PUBLIC_URL} --hostname-strict=false --http-enabled=true"]
     expose:
       - "8080"
     volumes:
