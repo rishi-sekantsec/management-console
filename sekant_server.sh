@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.4.1"
+SEKANT_DASHBOARD_VERSION="1.4.2"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -2661,12 +2661,14 @@ fi
 
 configured_hostname_default="$(normalize_hostname "$(read_env_value "CADDY_DOMAIN")")"
 if [[ -z "$configured_hostname_default" ]]; then
-  configured_hostname_default="${existing_cert_hostname:-localhost}"
+  configured_hostname_default="${existing_cert_hostname:-}"
+fi
+if [[ -z "$configured_hostname_default" && -z "$existing_cert_file" ]]; then
+  configured_hostname_default="localhost"
 fi
 configured_dashboard_https_port_default="$(trim_whitespace "$(read_env_value "DASHBOARD_HTTPS_PORT")")"
 configured_dashboard_https_port_default="${configured_dashboard_https_port_default:-$dashboard_https_port_default}"
 configured_seed_admin_email_default="$(trim_whitespace "$(read_env_value "KEYCLOAK_ADMIN_EMAIL")")"
-configured_seed_admin_email_default="${configured_seed_admin_email_default:-admin@sekant.local}"
 configured_clickhouse_mode_default="$(trim_whitespace "$(read_env_value "CLICKHOUSE_SETUP_MODE")")"
 configured_clickhouse_mode_default="${configured_clickhouse_mode_default:-local}"
 configured_clickhouse_retention_days_default="$(trim_whitespace "$(read_env_value "CLICKHOUSE_RETENTION_DAYS")")"
@@ -2721,16 +2723,32 @@ if (( force_reconfigure == 0 && can_reuse_env == 1 )); then
 else
   echo ""
   echo -e "${CYAN}${BOLD}Hostname & Ports${RESET}"
-  if [[ -n "$existing_cert_hostname" ]]; then
-    echo -e "Existing certificate hostname : ${existing_cert_hostname}"
+  if [[ -n "$existing_cert_file" ]]; then
+    if [[ -n "$existing_cert_hostname" ]]; then
+      public_hostname="$existing_cert_hostname"
+      echo -e "Existing certificate hostname : ${existing_cert_hostname}"
+      echo -e "Using hostname from /certs certificate : ${public_hostname}"
+    elif [[ -n "$configured_hostname_default" ]]; then
+      public_hostname="$configured_hostname_default"
+      echo -e "Using configured hostname for /certs certificate : ${public_hostname}"
+    else
+      echo -e "${CYAN}${BOLD}Error:${RESET} Unable to determine the dashboard hostname from the certificate in /certs." >&2
+      echo "Set CADDY_DOMAIN in .env or use a certificate with a valid SAN/CN hostname." >&2
+      exit 1
+    fi
+  else
+    public_hostname="$(normalize_hostname "$(prompt_with_default_text "Domain / Hostname for Management Console (default: ${configured_hostname_default}) : " "$configured_hostname_default")")"
   fi
-  public_hostname="$(normalize_hostname "$(prompt_with_default_text "Domain / Hostname for Management Console (default: ${configured_hostname_default}) : " "$configured_hostname_default")")"
   dashboard_https_port="$(prompt_port_with_default_text "Dashboard HTTPS host port (default: ${configured_dashboard_https_port_default}) : " "$configured_dashboard_https_port_default")"
 
   echo ""
   echo -e "${CYAN}${BOLD}Admin Credentials${RESET}"
   echo -e "Admin Username : ${seed_admin_username}"
-  seed_admin_email="$(prompt_email_with_default_required "Admin Email :" "$configured_seed_admin_email_default")"
+  if [[ -n "$configured_seed_admin_email_default" ]]; then
+    seed_admin_email="$(prompt_email_with_default_required "Admin Email :" "$configured_seed_admin_email_default")"
+  else
+    seed_admin_email="$(prompt_email_required "Admin Email : ")"
+  fi
   seed_admin_password="$(prompt_admin_password_required "Admin Password : ")"
 
   echo ""
