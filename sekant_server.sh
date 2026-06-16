@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.3.3"
+SEKANT_DASHBOARD_VERSION="1.3.4"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -1075,12 +1075,54 @@ run_cmd() {
   "$@"
 }
 
+compose_stop_timeout_sec="${SEKANT_DOCKER_STOP_TIMEOUT_SEC:-30}"
+compose_stop_max_wait_sec="${SEKANT_DOCKER_STOP_MAX_WAIT_SEC:-180}"
+
+run_cmd_with_max_wait() {
+  local max_wait_sec="$1"
+  shift
+
+  local start_seconds="$SECONDS"
+  local pid
+
+  if (( quiet == 1 )); then
+    "$@" >>"$upgrade_log_file" 2>&1 &
+  else
+    "$@" &
+  fi
+  pid=$!
+
+  while kill -0 "$pid" 2>/dev/null; do
+    if (( SECONDS - start_seconds >= max_wait_sec )); then
+      kill -TERM "$pid" 2>/dev/null || true
+      sleep 2
+      kill -KILL "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      return 124
+    fi
+    if (( quiet == 1 )); then
+      if (( (SECONDS - start_seconds) > 0 && (SECONDS - start_seconds) % 10 == 0 )); then
+        echo -e "${DIM}...still working (${SECONDS - start_seconds}s)${RESET}" >&2
+      fi
+    fi
+    sleep 1
+  done
+
+  wait "$pid"
+}
+
 compose_override_file=""
 compose_file_args=("-f" "${root_dir}/docker-compose.yml")
 platform_override_file="${root_dir}/.docker-compose.platform.yml"
 
 run_compose() {
   run_cmd "${compose_cmd[@]}" "${compose_file_args[@]}" "$@"
+}
+
+run_compose_with_max_wait() {
+  local max_wait_sec="$1"
+  shift
+  run_cmd_with_max_wait "$max_wait_sec" "${compose_cmd[@]}" "${compose_file_args[@]}" "$@"
 }
 
 compose_project_has_containers() {
@@ -1651,6 +1693,130 @@ remove_container_if_exists() {
   if docker container inspect "$container_name" >/dev/null 2>&1; then
     docker rm -f "$container_name" >/dev/null 2>&1 || true
   fi
+}
+
+collect_sekant_container_names() {
+  local compose_project="${1:-}"
+  local -a containers=()
+  local name
+
+  if [[ -n "$compose_project" ]]; then
+    while IFS= read -r name; do
+      name="$(trim_whitespace "$name")"
+      [[ -z "$name" ]] && continue
+      containers+=("$name")
+    done < <(docker ps -a --filter "label=com.docker.compose.project=${compose_project}" --format '{{.Names}}' 2>/dev/null || true)
+  fi
+
+  local -a fixed_names=(
+    "sekant-superset"
+    "sekant-readiness"
+    "sekant-caddy"
+    "sekant-nginx"
+    "sekant-frontend"
+    "sekant-backend"
+    "sekant-keycloak"
+    "sekant-redis"
+    "sekant-sql-validator"
+    "sekant-clickhouse"
+    "sekant-postgres"
+    "sekant-fluent-bit"
+    "sekant-init-secrets"
+  )
+  for name in "${fixed_names[@]}"; do
+    if docker container inspect "$name" >/dev/null 2>&1; then
+      containers+=("$name")
+    fi
+  done
+
+  local seen=$'\n'
+  local -a uniq=()
+  for name in "${containers[@]}"; do
+    if [[ "$seen" != *$'\n'"$name"$'\n'* ]]; then
+      seen="${seen}${name}"$'\n'
+      uniq+=("$name")
+    fi
+  done
+
+  printf '%s\n' "${uniq[@]+"${uniq[@]}"}"
+}
+
+force_stop_sekant_containers() {
+  local compose_project="${1:-}"
+  local -a containers=()
+  local name
+
+  while IFS= read -r name; do
+    name="$(trim_whitespace "$name")"
+    [[ -z "$name" ]] && continue
+    containers+=("$name")
+  done < <(collect_sekant_container_names "$compose_project")
+
+  (( ${#containers[@]} == 0 )) && return 0
+
+  docker stop -t "${compose_stop_timeout_sec}" "${containers[@]}" >/dev/null 2>&1 || true
+}
+
+force_remove_sekant_containers() {
+  local compose_project="${1:-}"
+  local -a containers=()
+  local name
+
+  while IFS= read -r name; do
+    name="$(trim_whitespace "$name")"
+    [[ -z "$name" ]] && continue
+    containers+=("$name")
+  done < <(collect_sekant_container_names "$compose_project")
+
+  (( ${#containers[@]} == 0 )) && return 0
+
+  docker stop -t "${compose_stop_timeout_sec}" "${containers[@]}" >/dev/null 2>&1 || true
+  docker rm -f "${containers[@]}" >/dev/null 2>&1 || true
+}
+
+compose_stop_preserving_volumes() {
+  local compose_project="${1:-}"
+  shift || true
+
+  if (( quiet == 1 )); then
+    echo -e "${DIM}Stopping containers (timeout=${compose_stop_timeout_sec}s, max-wait=${compose_stop_max_wait_sec}s).${RESET}" >&2
+    [[ -n "${upgrade_log_file:-}" ]] && echo -e "${DIM}Docker output is being captured to: ${upgrade_log_file}${RESET}" >&2
+  fi
+
+  local status
+  set +e
+  run_compose_with_max_wait "${compose_stop_max_wait_sec}" stop -t "${compose_stop_timeout_sec}" "$@"
+  status=$?
+  set -e
+
+  if (( status == 124 )); then
+    echo -e "${CYAN}${BOLD}Warning:${RESET} docker compose stop exceeded ${compose_stop_max_wait_sec}s. Forcing container stop..." >&2
+    force_stop_sekant_containers "$compose_project"
+    return 0
+  fi
+  return "$status"
+}
+
+compose_down_preserving_volumes() {
+  local compose_project="${1:-}"
+
+  if (( quiet == 1 )); then
+    echo -e "${DIM}Stopping & removing containers (preserving volumes) (timeout=${compose_stop_timeout_sec}s, max-wait=${compose_stop_max_wait_sec}s).${RESET}" >&2
+    [[ -n "${upgrade_log_file:-}" ]] && echo -e "${DIM}Docker output is being captured to: ${upgrade_log_file}${RESET}" >&2
+  fi
+
+  local status
+  set +e
+  run_compose_with_max_wait "${compose_stop_max_wait_sec}" down -t "${compose_stop_timeout_sec}" --remove-orphans
+  status=$?
+  set -e
+
+  if (( status == 124 )); then
+    echo -e "${CYAN}${BOLD}Warning:${RESET} docker compose down exceeded ${compose_stop_max_wait_sec}s. Forcing container removal (preserving volumes)..." >&2
+    force_remove_sekant_containers "$compose_project"
+    return 0
+  fi
+  return "$status"
 }
 
 resolve_compose_command() {
@@ -2468,7 +2634,7 @@ if [[ "$operation" == "stop" ]]; then
     exit 0
   fi
   echo -e "${CYAN}${BOLD}Stopping Sekant containers (preserving volumes)...${RESET}"
-  run_compose stop "${compose_up_args[@]+"${compose_up_args[@]}"}"
+  compose_stop_preserving_volumes "$existing_compose_project" "${compose_up_args[@]+"${compose_up_args[@]}"}"
   exit 0
 fi
 
@@ -2527,7 +2693,7 @@ fi
 if [[ "$operation" == "install" ]] && (( upgrade == 1 || has_existing_runtime == 1 )); then
   echo -e "${CYAN}${BOLD}Stopping existing containers (preserving volumes)...${RESET}"
   cd "$root_dir"
-  run_compose down --remove-orphans
+  compose_down_preserving_volumes "$existing_compose_project"
   if (( upgrade == 1 )); then
     remove_container_if_exists "sekant-superset"
     remove_container_if_exists "sekant-readiness"
