@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.3.5"
+SEKANT_DASHBOARD_VERSION="1.4.0"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -381,6 +381,7 @@ detect_repo_prefix() {
 default_distribution_manifest() {
   cat <<'EOF'
 .gitignore
+distribution-manifest.txt
 sekant_server.sh
 docker-compose.yml
 clickhouse/config.xml
@@ -424,6 +425,10 @@ is_safe_relative_path() {
     fi
   done
   return 0
+}
+
+should_preserve_clickhouse_on_upgrade() {
+  [[ "${SEKANT_UPGRADE_PRESERVE_CLICKHOUSE:-1}" == "1" ]]
 }
 
 manifest_list_contains() {
@@ -512,6 +517,7 @@ apply_update_from_github() {
   local manifest_text raw_line source_path dest_path url tmp dest_dir dest
   local manifest_sources=()
   local manifest_dests=()
+  local manifest_retained_dests=()
   if ! manifest_text="$(fetch_distribution_manifest "$tag" "$prefix")"; then
     manifest_text="$(default_distribution_manifest)"
   fi
@@ -534,6 +540,12 @@ apply_update_from_github() {
       return 1
     fi
 
+    manifest_retained_dests+=("$dest_path")
+
+    if should_preserve_clickhouse_on_upgrade && [[ "$dest_path" == clickhouse/* ]]; then
+      continue
+    fi
+
     manifest_sources+=("$source_path")
     manifest_dests+=("$dest_path")
   done <<< "$manifest_text"
@@ -542,6 +554,7 @@ apply_update_from_github() {
     manifest_text="$(default_distribution_manifest)"
     manifest_sources=()
     manifest_dests=()
+    manifest_retained_dests=()
 
     while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
       raw_line="$(trim_whitespace "$(printf "%s" "$raw_line" | tr -d '\r')")"
@@ -559,6 +572,12 @@ apply_update_from_github() {
       if ! is_safe_relative_path "$source_path" || ! is_safe_relative_path "$dest_path"; then
         echo -e "${CYAN}${BOLD}Error:${RESET} Invalid upgrade manifest entry: ${raw_line}" >&2
         return 1
+      fi
+
+      manifest_retained_dests+=("$dest_path")
+
+      if should_preserve_clickhouse_on_upgrade && [[ "$dest_path" == clickhouse/* ]]; then
+        continue
       fi
 
       manifest_sources+=("$source_path")
@@ -604,8 +623,8 @@ apply_update_from_github() {
     fi
   done
 
-  prune_removed_distribution_files "${manifest_dests[@]}"
-  save_managed_distribution_files "${manifest_dests[@]}"
+  prune_removed_distribution_files "${manifest_retained_dests[@]}"
+  save_managed_distribution_files "${manifest_retained_dests[@]}"
   chmod +x "${root_dir}/${new_script_name}" >/dev/null 2>&1 || true
   return 0
 }
@@ -1695,6 +1714,23 @@ remove_container_if_exists() {
   fi
 }
 
+upgrade_recreate_service_names() {
+  local -a services=(
+    "init-secrets"
+    "postgres"
+    "keycloak"
+    "redis"
+    "sql-validator"
+    "backend"
+    "frontend"
+    "nginx"
+    "caddy"
+    "fluent-bit"
+    "readiness"
+  )
+  printf '%s\n' "${services[@]}"
+}
+
 collect_sekant_container_names() {
   local compose_project="${1:-}"
   local -a containers=()
@@ -2770,9 +2806,22 @@ else
 fi
 
 if [[ "$operation" == "install" ]] && (( upgrade == 1 || has_existing_runtime == 1 )); then
-  echo -e "${CYAN}${BOLD}Stopping existing containers (preserving volumes)...${RESET}"
+  preserve_clickhouse_runtime=0
+  if (( upgrade == 1 && has_existing_runtime == 1 )) && should_preserve_clickhouse_on_upgrade && docker container inspect "sekant-clickhouse" >/dev/null 2>&1; then
+    preserve_clickhouse_runtime=1
+  fi
+  if (( preserve_clickhouse_runtime == 1 )); then
+    echo -e "${CYAN}${BOLD}Stopping existing containers (preserving volumes, leaving ClickHouse running)...${RESET}"
+  else
+    echo -e "${CYAN}${BOLD}Stopping existing containers (preserving volumes)...${RESET}"
+  fi
   cd "$root_dir"
-  compose_down_preserving_volumes "$existing_compose_project"
+  if (( preserve_clickhouse_runtime == 1 )); then
+    mapfile -t upgrade_recreate_services < <(upgrade_recreate_service_names)
+    compose_stop_preserving_volumes "$existing_compose_project" "${upgrade_recreate_services[@]}"
+  else
+    compose_down_preserving_volumes "$existing_compose_project"
+  fi
   if (( upgrade == 1 )); then
     remove_container_if_exists "sekant-superset"
     remove_container_if_exists "sekant-readiness"
@@ -2783,7 +2832,9 @@ if [[ "$operation" == "install" ]] && (( upgrade == 1 || has_existing_runtime ==
     remove_container_if_exists "sekant-keycloak"
     remove_container_if_exists "sekant-redis"
     remove_container_if_exists "sekant-sql-validator"
-    remove_container_if_exists "sekant-clickhouse"
+    if (( preserve_clickhouse_runtime == 0 )); then
+      remove_container_if_exists "sekant-clickhouse"
+    fi
     remove_container_if_exists "sekant-postgres"
     remove_container_if_exists "sekant-fluent-bit"
     remove_container_if_exists "sekant-init-secrets"
@@ -2874,11 +2925,6 @@ if ! docker run --rm "${init_secrets_check_image}" sh -c "grep -q \"Caddyfile pr
   exit 1
 fi
 
-set +e
-run_compose up -d --remove-orphans "${compose_up_args[@]+"${compose_up_args[@]}"}"
-compose_status=$?
-set -e
-
 has_service_args=0
 for arg in "${compose_up_args[@]+"${compose_up_args[@]}"}"; do
   if [[ "$arg" != -* ]]; then
@@ -2886,6 +2932,15 @@ for arg in "${compose_up_args[@]+"${compose_up_args[@]}"}"; do
     break
   fi
 done
+compose_up_targets=("${compose_up_args[@]+"${compose_up_args[@]}"}")
+if (( upgrade == 1 && has_service_args == 0 && ${preserve_clickhouse_runtime:-0} == 1 )); then
+  mapfile -t compose_up_targets < <(upgrade_recreate_service_names)
+fi
+
+set +e
+run_compose up -d --remove-orphans "${compose_up_targets[@]+"${compose_up_targets[@]}"}"
+compose_status=$?
+set -e
 if (( compose_status == 0 && has_service_args == 0 )); then
   set +e
   wait_for_sekant_ready
@@ -2955,7 +3010,7 @@ if (( compose_status != 0 )); then
 
     if (( attempted_recovery == 1 )); then
       set +e
-      run_compose up -d --remove-orphans "${compose_up_args[@]+"${compose_up_args[@]}"}"
+      run_compose up -d --remove-orphans "${compose_up_targets[@]+"${compose_up_targets[@]}"}"
       compose_retry_status=$?
       set -e
       if (( compose_retry_status == 0 )); then

@@ -1,0 +1,14 @@
+# Files that exist in the published build repo and should be managed by upgrades.
+.gitignore
+distribution-manifest.txt
+sekant_server.sh
+docker-compose.yml
+clickhouse/config.xml
+clickhouse/init.sql
+clickhouse/init.remote.sql
+clickhouse/storage.local.xml
+clickhouse/storage.remote.xml
+clickhouse/config.d/storage.xml
+postgres/init.sql
+certs/generate-public-cert.sh
+README.md
