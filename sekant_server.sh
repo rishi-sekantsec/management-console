@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.5.0"
+SEKANT_DASHBOARD_VERSION="1.5.1"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -1075,10 +1075,6 @@ if [[ "$operation" == "install" ]]; then
       fi
       SEKANT_FORCE_IMAGE_TAG="${latest_semver}" exec "${root_dir}/${script_display_name}" "${new_args[@]+"${new_args[@]}"}"
     fi
-  else
-    if (( upgrade == 1 && quiet == 0 )); then
-      echo -e "${CYAN}${BOLD}No update available:${RESET} continuing with current version v${current_semver}"
-    fi
   fi
 fi
 
@@ -1836,11 +1832,6 @@ compose_stop_preserving_volumes() {
   local compose_project="${1:-}"
   shift || true
 
-  if (( quiet == 1 )); then
-    echo -e "${DIM}Stopping containers (timeout=${compose_stop_timeout_sec}s, max-wait=${compose_stop_max_wait_sec}s).${RESET}" >&2
-    [[ -n "${upgrade_log_file:-}" ]] && echo -e "${DIM}Docker output is being captured to: ${upgrade_log_file}${RESET}" >&2
-  fi
-
   local status
   set +e
   run_compose_with_max_wait "${compose_stop_max_wait_sec}" stop -t "${compose_stop_timeout_sec}" "$@"
@@ -1857,11 +1848,6 @@ compose_stop_preserving_volumes() {
 
 compose_down_preserving_volumes() {
   local compose_project="${1:-}"
-
-  if (( quiet == 1 )); then
-    echo -e "${DIM}Stopping & removing containers (preserving volumes) (timeout=${compose_stop_timeout_sec}s, max-wait=${compose_stop_max_wait_sec}s).${RESET}" >&2
-    [[ -n "${upgrade_log_file:-}" ]] && echo -e "${DIM}Docker output is being captured to: ${upgrade_log_file}${RESET}" >&2
-  fi
 
   local status
   set +e
@@ -2573,7 +2559,6 @@ if docker volume inspect "$postgres_volume_name" >/dev/null 2>&1; then
 fi
 if (( has_secrets_volume == 1 || has_database_volume == 1 || has_postgres_volume == 1 )); then
   has_existing_volumes=1
-  echo -e "${CYAN}${BOLD}Detected existing deployment volumes; reusing persisted secrets and database data.${RESET}"
 fi
 
 resolve_helper_image() {
@@ -2639,10 +2624,24 @@ write_volume_file() {
 }
 
 installed_version=""
+installed_version_normalized=""
+pending_runtime_upgrade=0
 if (( has_existing_volumes == 1 )); then
   installed_version="$(read_volume_file "$secrets_volume_name" "dashboard_version" | tr -d '\r' | head -n 1 | xargs || true)"
+  installed_version_normalized="$(normalize_version "$installed_version")"
   if [[ -n "${SEKANT_DASHBOARD_VERSION}" && -n "${installed_version}" && "${installed_version}" != "${SEKANT_DASHBOARD_VERSION}" ]]; then
     echo -e "${CYAN}${BOLD}Upgrade detected:${RESET} v${installed_version} -> v${SEKANT_DASHBOARD_VERSION}"
+  fi
+fi
+
+if (( upgrade == 1 )) && [[ -n "${SEKANT_DASHBOARD_VERSION:-}" ]]; then
+  current_dashboard_version_normalized="$(normalize_version "${SEKANT_DASHBOARD_VERSION}")"
+  if [[ -n "$installed_version_normalized" && "$installed_version_normalized" == "$current_dashboard_version_normalized" ]]; then
+    echo "ALREADY ON LATEST VERSION"
+    exit 0
+  fi
+  if [[ -n "$installed_version_normalized" && "$installed_version_normalized" != "$current_dashboard_version_normalized" ]]; then
+    pending_runtime_upgrade=1
   fi
 fi
 
@@ -2857,11 +2856,6 @@ if [[ "$operation" == "install" ]] && (( upgrade == 1 || has_existing_runtime ==
   preserve_clickhouse_runtime=0
   if (( upgrade == 1 && has_existing_runtime == 1 )) && should_preserve_clickhouse_on_upgrade && docker container inspect "sekant-clickhouse" >/dev/null 2>&1; then
     preserve_clickhouse_runtime=1
-  fi
-  if (( preserve_clickhouse_runtime == 1 )); then
-    echo -e "${CYAN}${BOLD}Stopping existing containers (preserving volumes, leaving ClickHouse running)...${RESET}"
-  else
-    echo -e "${CYAN}${BOLD}Stopping existing containers (preserving volumes)...${RESET}"
   fi
   cd "$root_dir"
   if (( preserve_clickhouse_runtime == 1 )); then
@@ -3102,6 +3096,10 @@ fi
 echo
 echo -e "${CYAN}${BOLD}Dashboard URL:${RESET} ${public_url}"
 echo
+
+if (( upgrade == 1 && pending_runtime_upgrade == 1 )) && [[ -n "${SEKANT_DASHBOARD_VERSION:-}" ]]; then
+  echo "UPGRADE TO VERISON ${SEKANT_DASHBOARD_VERSION} Done"
+fi
 
 if [[ -n "$upgrade_log_file" ]]; then
   rm -f "$upgrade_log_file" 2>/dev/null || true
