@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.5.1"
+SEKANT_DASHBOARD_VERSION="1.5.2"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -1019,7 +1019,6 @@ fi
 latest_tag=""
 latest_semver=""
 if [[ "$operation" == "install" ]]; then
-  preflight_note "Checking for installer updates..."
   if github_latest_tag; then
     latest_tag="$github_latest_tag_value"
     latest_semver="$(tag_semver "$latest_tag")"
@@ -1673,7 +1672,6 @@ check_for_upgrade_notice() {
   fi
 }
 
-preflight_note "Checking published image availability..."
 check_for_upgrade_notice || true
 
 detect_existing_compose_project() {
@@ -1907,8 +1905,6 @@ linux_host_resource_preflight() {
 
   mem_total_mb=$(( mem_total_kb / 1024 ))
   swap_total_mb=$(( swap_total_kb / 1024 ))
-
-  preflight_note "Host resources detected: ${mem_total_mb} MiB RAM, ${swap_total_mb} MiB swap."
 
   if (( mem_total_mb >= min_ram_mb )); then
     return 0
@@ -2437,11 +2433,9 @@ image_decision() {
 generate_platform_override() {
   [[ -z "$host_arch" ]] && return 0
   if [[ "${SEKANT_SKIP_PLATFORM_PROBE:-}" == "1" ]]; then
-    preflight_note "Skipping Docker image platform checks."
     return 0
   fi
   if [[ "$host_arch" == "amd64" ]]; then
-    preflight_note "Skipping Docker image platform checks on amd64 host."
     return 0
   fi
   command -v python3 >/dev/null 2>&1 || return 0

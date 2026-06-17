@@ -190,10 +190,17 @@ services:
         export PUBLIC_URL="$$(printf '%s' "$$PUBLIC_URL" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$$//' | sed -E 's/^`//; s/`$$//; s/^"//; s/"$$//; s/^'"'"'//; s/'"'"'$$//' | sed -E 's/,+$$//' | sed -E 's#^[Hh][Tt][Tt][Pp][Ss]://#https://#; s#^[Hh][Tt][Tt][Pp]://#http://#')"
         export PUBLIC_URL="$${PUBLIC_URL%/}"
         export KEYCLOAK_HOSTNAME="$${KEYCLOAK_HOSTNAME:-}"
+        export KEYCLOAK_HOSTNAME="$$(printf '%s' "$$KEYCLOAK_HOSTNAME" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$$//' | sed -E 's/^`//; s/`$$//; s/^"//; s/"$$//; s/^'"'"'//; s/'"'"'$$//')"
         if [ -z "$$KEYCLOAK_HOSTNAME" ]; then
           export KEYCLOAK_HOSTNAME="$$PUBLIC_URL"
+        elif ! printf '%s' "$$KEYCLOAK_HOSTNAME" | grep -Eiq '^https?://'; then
+          public_scheme="$$(printf '%s' "$$PUBLIC_URL" | sed -E 's#^(https?)://.*#\1#I')"
+          if [ -z "$$public_scheme" ] || [ "$$public_scheme" = "$$PUBLIC_URL" ]; then
+            public_scheme="https"
+          fi
+          export KEYCLOAK_HOSTNAME="$$public_scheme://$$KEYCLOAK_HOSTNAME"
         fi
-        export KEYCLOAK_HOSTNAME="$$(printf '%s' "$$KEYCLOAK_HOSTNAME" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$$//' | sed -E 's/^`//; s/`$$//; s/^"//; s/"$$//; s/^'"'"'//; s/'"'"'$$//' | sed -E 's#^[Hh][Tt][Tt][Pp][Ss]?://##' | sed -E 's#/.*$$##')"
+        export KEYCLOAK_HOSTNAME="$${KEYCLOAK_HOSTNAME%/}"
         exec /opt/keycloak/bin/kc.sh start --http-enabled=true --import-realm --hostname="$$KEYCLOAK_HOSTNAME"
     expose:
       - "8080"
