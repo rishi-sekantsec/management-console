@@ -181,7 +181,7 @@ services:
       KC_PROXY: edge
       QUARKUS_HTTP_PROXY_ALLOW_X_FORWARDED: "true"
       QUARKUS_HTTP_PROXY_ALLOW_FORWARDED: "false"
-    entrypoint: ["/bin/sh", "-c", "export KC_DB_PASSWORD=$$(cat /opt/keycloak/data/import/postgres_password) && export KEYCLOAK_ADMIN_PASSWORD=$$(cat /opt/keycloak/data/import/keycloak_admin_password) && exec /opt/keycloak/bin/kc.sh start-dev --import-realm"]
+    entrypoint: ["/bin/sh", "-c", "export KC_DB_PASSWORD=$$(cat /opt/keycloak/data/import/postgres_password) && export KEYCLOAK_ADMIN_PASSWORD=$$(cat /opt/keycloak/data/import/keycloak_admin_password) && export PUBLIC_URL=$${PUBLIC_URL:-https://localhost} && export PUBLIC_URL=$$(printf '%s' \"$$PUBLIC_URL\" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$$//' | sed -E 's/^`//; s/`$$//; s/^\"//; s/\"$$//; s/^'\"'\"'//; s/'\"'\"'$$//' | sed -E 's/,+$$//' | sed -E 's#^[Hh][Tt][Tt][Pp][Ss]//#https://#; s#^[Hh][Tt][Tt][Pp]//#http://#' ) && export PUBLIC_URL=$${PUBLIC_URL%/} && exec /opt/keycloak/bin/kc.sh start --http-enabled=true --import-realm --proxy=edge --hostname-url=$${PUBLIC_URL} --hostname-strict=false"]
     expose:
       - "8080"
     volumes:

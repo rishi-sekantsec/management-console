@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.4.4"
+SEKANT_DASHBOARD_VERSION="1.5.0"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -2776,6 +2776,8 @@ if [[ -z "$public_url" ]]; then
   exit 1
 fi
 write_env_value "PUBLIC_URL" "$public_url"
+# Keep backend-to-Keycloak traffic on the Docker network even for public HTTPS deployments.
+write_env_value "KEYCLOAK_URL" "http://keycloak:8080"
 
 write_env_value "KEYCLOAK_ADMIN" "$seed_admin_username"
 write_env_value "KEYCLOAK_ADMIN_EMAIL" "$seed_admin_email"
