@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.5.4"
+SEKANT_DASHBOARD_VERSION="1.5.5"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -1435,7 +1435,9 @@ normalize_hostname() {
   raw_hostname="${raw_hostname%\"}"
   raw_hostname="${raw_hostname#\'}"
   raw_hostname="${raw_hostname%\'}"
-  raw_hostname="$(printf "%s" "$raw_hostname" | sed -E 's#^[A-Za-z][A-Za-z0-9+.-]*:?/*##')"
+  if printf "%s" "$raw_hostname" | grep -Eiq '^[Hh][Tt][Tt][Pp][Ss]?[:/\\]'; then
+    raw_hostname="$(printf "%s" "$raw_hostname" | sed -E 's#^[Hh][Tt][Tt][Pp][Ss]?[:/\\]*##')"
+  fi
   raw_hostname="${raw_hostname%%/*}"
   raw_hostname="${raw_hostname%%\?*}"
   raw_hostname="${raw_hostname%%\#*}"
