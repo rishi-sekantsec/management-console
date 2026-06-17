@@ -174,12 +174,13 @@ services:
     environment:
       KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
       PUBLIC_URL: ${PUBLIC_URL:-https://localhost}
-      KEYCLOAK_HOSTNAME: ${KEYCLOAK_HOSTNAME:-}
       KC_DB: postgres
       KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
       KC_DB_USERNAME: ${POSTGRES_USER:-sekant}
       KC_HOSTNAME_STRICT: "true"
-      KC_PROXY_HEADERS: xforwarded
+      KC_PROXY: edge
+      QUARKUS_HTTP_PROXY_ALLOW_X_FORWARDED: "true"
+      QUARKUS_HTTP_PROXY_ALLOW_FORWARDED: "false"
     entrypoint:
       - /bin/sh
       - -ec
@@ -187,21 +188,31 @@ services:
         export KC_DB_PASSWORD="$$(cat /opt/keycloak/data/import/postgres_password)"
         export KEYCLOAK_ADMIN_PASSWORD="$$(cat /opt/keycloak/data/import/keycloak_admin_password)"
         export PUBLIC_URL="$${PUBLIC_URL:-https://localhost}"
-        export PUBLIC_URL="$$(printf '%s' "$$PUBLIC_URL" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$$//' | sed -E 's/^`//; s/`$$//; s/^"//; s/"$$//; s/^'"'"'//; s/'"'"'$$//' | sed -E 's/,+$$//' | sed -E 's#^[Hh][Tt][Tt][Pp][Ss]:?/*#https://#; s#^[Hh][Tt][Tt][Pp]:?/*#http://#')"
+        export PUBLIC_URL="$$(printf '%s' "$$PUBLIC_URL" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$$//' | sed -E 's/^`//; s/`$$//; s/^"//; s/"$$//; s/^'"'"'//; s/'"'"'$$//' | sed -E 's/,+$$//')"
+        if printf '%s' "$$PUBLIC_URL" | grep -Eiq '^[Hh][Tt][Tt][Pp][Ss]:?/*'; then
+          export PUBLIC_URL="$$(printf '%s' "$$PUBLIC_URL" | sed -E 's#^[Hh][Tt][Tt][Pp][Ss]:?/*#https://#')"
+        elif printf '%s' "$$PUBLIC_URL" | grep -Eiq '^[Hh][Tt][Tt][Pp]:?/*'; then
+          export PUBLIC_URL="$$(printf '%s' "$$PUBLIC_URL" | sed -E 's#^[Hh][Tt][Tt][Pp]:?/*#http://#')"
+        fi
         export PUBLIC_URL="$${PUBLIC_URL%/}"
-        export KEYCLOAK_HOSTNAME="$${KEYCLOAK_HOSTNAME:-}"
-        export KEYCLOAK_HOSTNAME="$$(printf '%s' "$$KEYCLOAK_HOSTNAME" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$$//' | sed -E 's/^`//; s/`$$//; s/^"//; s/"$$//; s/^'"'"'//; s/'"'"'$$//' | sed -E 's/,+$$//' | sed -E 's#^[Hh][Tt][Tt][Pp][Ss]:?/*#https://#; s#^[Hh][Tt][Tt][Pp]:?/*#http://#')"
-        if [ -z "$$KEYCLOAK_HOSTNAME" ]; then
-          export KEYCLOAK_HOSTNAME="$$PUBLIC_URL"
-        elif ! printf '%s' "$$KEYCLOAK_HOSTNAME" | grep -Eiq '^https?://'; then
+        keycloak_hostname_raw="${KEYCLOAK_HOSTNAME:-}"
+        keycloak_hostname="$$(printf '%s' "$$keycloak_hostname_raw" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$$//' | sed -E 's/^`//; s/`$$//; s/^"//; s/"$$//; s/^'"'"'//; s/'"'"'$$//' | sed -E 's/,+$$//')"
+        if printf '%s' "$$keycloak_hostname" | grep -Eiq '^[Hh][Tt][Tt][Pp][Ss]:?/*'; then
+          keycloak_hostname="$$(printf '%s' "$$keycloak_hostname" | sed -E 's#^[Hh][Tt][Tt][Pp][Ss]:?/*#https://#')"
+        elif printf '%s' "$$keycloak_hostname" | grep -Eiq '^[Hh][Tt][Tt][Pp]:?/*'; then
+          keycloak_hostname="$$(printf '%s' "$$keycloak_hostname" | sed -E 's#^[Hh][Tt][Tt][Pp]:?/*#http://#')"
+        fi
+        if [ -z "$$keycloak_hostname" ]; then
+          keycloak_hostname="$$PUBLIC_URL"
+        elif ! printf '%s' "$$keycloak_hostname" | grep -Eiq '^https?://'; then
           public_scheme="$$(printf '%s' "$$PUBLIC_URL" | sed -E 's#^(https?)://.*#\1#I')"
           if [ -z "$$public_scheme" ] || [ "$$public_scheme" = "$$PUBLIC_URL" ]; then
             public_scheme="https"
           fi
-          export KEYCLOAK_HOSTNAME="$$public_scheme://$$KEYCLOAK_HOSTNAME"
+          keycloak_hostname="$$public_scheme://$$keycloak_hostname"
         fi
-        export KEYCLOAK_HOSTNAME="$${KEYCLOAK_HOSTNAME%/}"
-        exec /opt/keycloak/bin/kc.sh start --http-enabled=true --import-realm --hostname="$$KEYCLOAK_HOSTNAME"
+        keycloak_hostname="$${keycloak_hostname%/}"
+        exec /opt/keycloak/bin/kc.sh start --http-enabled=true --import-realm --proxy=edge --hostname-url="$$PUBLIC_URL" --hostname-strict=true
     expose:
       - "8080"
     volumes:
