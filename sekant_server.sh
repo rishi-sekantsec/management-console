@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.5.5"
+SEKANT_DASHBOARD_VERSION="1.5.6"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -1470,6 +1470,19 @@ build_public_url() {
   printf "https://%s:%s" "$hostname" "$port"
 }
 
+read_configured_hostname() {
+  local key raw_value hostname
+  for key in CADDY_DOMAIN KEYCLOAK_HOSTNAME PUBLIC_URL KEYCLOAK_PUBLIC_URL HOSTNAME; do
+    raw_value="$(read_env_value "$key")"
+    hostname="$(normalize_hostname "$raw_value")"
+    if [[ -n "$hostname" ]]; then
+      printf "%s" "$hostname"
+      return 0
+    fi
+  done
+  printf "%s" ""
+}
+
 find_existing_cert_file() {
   local certs_dir="${root_dir}/certs"
   local cert_file=""
@@ -2654,7 +2667,7 @@ if [[ -n "$existing_cert_file" ]]; then
   existing_cert_hostname="$(extract_hostname_from_cert "$existing_cert_file" || true)"
 fi
 
-configured_hostname_default="$(normalize_hostname "$(read_env_value "CADDY_DOMAIN")")"
+configured_hostname_default="$(read_configured_hostname)"
 if [[ -z "$configured_hostname_default" ]]; then
   configured_hostname_default="${existing_cert_hostname:-}"
 fi
@@ -2680,7 +2693,7 @@ fi
 
 if (( force_reconfigure == 0 && can_reuse_env == 1 )); then
   echo -e "${CYAN}${BOLD}Reusing existing setup values from .env (use --reconfigure to change).${RESET}"
-  public_hostname="$(normalize_hostname "$(read_env_value "CADDY_DOMAIN")")"
+  public_hostname="$(read_configured_hostname)"
   if [[ -z "$public_hostname" ]]; then
     if [[ -n "$existing_cert_hostname" ]]; then
       public_hostname="$existing_cert_hostname"
