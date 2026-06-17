@@ -187,10 +187,10 @@ services:
         export KC_DB_PASSWORD="$$(cat /opt/keycloak/data/import/postgres_password)"
         export KEYCLOAK_ADMIN_PASSWORD="$$(cat /opt/keycloak/data/import/keycloak_admin_password)"
         export PUBLIC_URL="$${PUBLIC_URL:-https://localhost}"
-        export PUBLIC_URL="$$(printf '%s' "$$PUBLIC_URL" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$$//' | sed -E 's/^`//; s/`$$//; s/^"//; s/"$$//; s/^'"'"'//; s/'"'"'$$//' | sed -E 's/,+$$//' | sed -E 's#^[Hh][Tt][Tt][Pp][Ss]://#https://#; s#^[Hh][Tt][Tt][Pp]://#http://#')"
+        export PUBLIC_URL="$$(printf '%s' "$$PUBLIC_URL" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$$//' | sed -E 's/^`//; s/`$$//; s/^"//; s/"$$//; s/^'"'"'//; s/'"'"'$$//' | sed -E 's/,+$$//' | sed -E 's#^[Hh][Tt][Tt][Pp][Ss]:?/*#https://#; s#^[Hh][Tt][Tt][Pp]:?/*#http://#')"
         export PUBLIC_URL="$${PUBLIC_URL%/}"
         export KEYCLOAK_HOSTNAME="$${KEYCLOAK_HOSTNAME:-}"
-        export KEYCLOAK_HOSTNAME="$$(printf '%s' "$$KEYCLOAK_HOSTNAME" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$$//' | sed -E 's/^`//; s/`$$//; s/^"//; s/"$$//; s/^'"'"'//; s/'"'"'$$//')"
+        export KEYCLOAK_HOSTNAME="$$(printf '%s' "$$KEYCLOAK_HOSTNAME" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$$//' | sed -E 's/^`//; s/`$$//; s/^"//; s/"$$//; s/^'"'"'//; s/'"'"'$$//' | sed -E 's/,+$$//' | sed -E 's#^[Hh][Tt][Tt][Pp][Ss]:?/*#https://#; s#^[Hh][Tt][Tt][Pp]:?/*#http://#')"
         if [ -z "$$KEYCLOAK_HOSTNAME" ]; then
           export KEYCLOAK_HOSTNAME="$$PUBLIC_URL"
         elif ! printf '%s' "$$KEYCLOAK_HOSTNAME" | grep -Eiq '^https?://'; then
