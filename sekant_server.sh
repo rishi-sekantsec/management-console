@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.6.0"
+SEKANT_DASHBOARD_VERSION="1.6.1"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -1090,7 +1090,7 @@ run_cmd() {
 }
 
 compose_stop_timeout_sec="${SEKANT_DOCKER_STOP_TIMEOUT_SEC:-30}"
-compose_stop_max_wait_sec="${SEKANT_DOCKER_STOP_MAX_WAIT_SEC:-180}"
+compose_stop_max_wait_sec="${SEKANT_DOCKER_STOP_MAX_WAIT_SEC:-360}"
 
 run_cmd_with_max_wait() {
   local max_wait_sec="$1"
@@ -1137,6 +1137,79 @@ run_compose_with_max_wait() {
   local max_wait_sec="$1"
   shift
   run_cmd_with_max_wait "$max_wait_sec" "${compose_cmd[@]}" "${compose_file_args[@]}" "$@"
+}
+
+show_upgrade_progress() {
+  (( upgrade == 1 && quiet == 1 ))
+}
+
+print_upgrade_progress() {
+  show_upgrade_progress || return 0
+  echo "$@" >&2
+}
+
+service_to_container_name() {
+  local service_name="$1"
+  printf "sekant-%s" "$service_name"
+}
+
+announce_compose_stop_targets() {
+  local compose_project="${1:-}"
+  shift || true
+
+  show_upgrade_progress || return 0
+
+  local -a target_names=()
+  local item
+  if (( $# > 0 )); then
+    for item in "$@"; do
+      [[ -z "$item" || "$item" == -* ]] && continue
+      target_names+=("$(service_to_container_name "$item")")
+    done
+  else
+    while IFS= read -r item; do
+      item="$(trim_whitespace "$item")"
+      [[ -z "$item" ]] && continue
+      target_names+=("$item")
+    done < <(collect_sekant_container_names "$compose_project")
+  fi
+
+  (( ${#target_names[@]} == 0 )) && return 0
+
+  print_upgrade_progress "Stopping containers:"
+  for item in "${target_names[@]}"; do
+    print_upgrade_progress "  - ${item}"
+  done
+}
+
+announce_compose_pull_images() {
+  show_upgrade_progress || return 0
+
+  local images_output=""
+  local image_name
+  local seen=$'\n'
+  images_output="$("${compose_cmd[@]}" "${compose_file_args[@]}" config --images 2>/dev/null || true)"
+  if [[ -z "$images_output" ]]; then
+    print_upgrade_progress "Pulling Docker images..."
+    return 0
+  fi
+
+  print_upgrade_progress "Pulling Docker images:"
+  while IFS= read -r image_name; do
+    image_name="$(trim_whitespace "$image_name")"
+    [[ -z "$image_name" ]] && continue
+    if [[ "$seen" == *$'\n'"$image_name"$'\n'* ]]; then
+      continue
+    fi
+    seen="${seen}${image_name}"$'\n'
+    print_upgrade_progress "  - ${image_name}"
+  done <<<"$images_output"
+}
+
+show_compose_status_snapshot() {
+  show_upgrade_progress || return 0
+  print_upgrade_progress "Container status:"
+  "${compose_cmd[@]}" "${compose_file_args[@]}" ps 2>/dev/null >&2 || true
 }
 
 compose_project_has_containers() {
@@ -1231,9 +1304,14 @@ wait_for_container_ready() {
   local container_name="$1"
   local timeout_seconds="$2"
   local start_seconds="$SECONDS"
+  local last_health=""
   while true; do
     local health
     health="$(container_health_status "$container_name")"
+    if show_upgrade_progress && [[ -n "$health" && "$health" != "$last_health" ]]; then
+      print_upgrade_progress "  - ${container_name}: ${health}"
+      last_health="$health"
+    fi
     if [[ "$health" == "healthy" || "$health" == "running" ]]; then
       return 0
     fi
@@ -1344,6 +1422,9 @@ wait_for_sekant_ready() {
     local container_name="${item%%:*}"
     local timeout_seconds="${item##*:}"
     local status
+    if show_upgrade_progress; then
+      print_upgrade_progress "Waiting for ${container_name}..."
+    fi
     status="$(container_status "$container_name")"
     if [[ -z "$status" ]]; then
       return 1
@@ -1845,6 +1926,8 @@ compose_stop_preserving_volumes() {
   local compose_project="${1:-}"
   shift || true
 
+  announce_compose_stop_targets "$compose_project" "$@"
+
   local status
   set +e
   run_compose_with_max_wait "${compose_stop_max_wait_sec}" stop -t "${compose_stop_timeout_sec}" "$@"
@@ -1861,6 +1944,8 @@ compose_stop_preserving_volumes() {
 
 compose_down_preserving_volumes() {
   local compose_project="${1:-}"
+
+  announce_compose_stop_targets "$compose_project"
 
   local status
   set +e
@@ -2934,6 +3019,7 @@ else
     if (( quiet == 0 )); then
       echo "Pulling Docker images from ${sekant_image_repo}..." >&2
     fi
+    announce_compose_pull_images
     set +e
     run_compose pull
     set -e
@@ -3004,6 +3090,10 @@ if (( compose_status == 0 && has_service_args == 0 )); then
       compose_status=1
     fi
   fi
+fi
+
+if (( compose_status == 0 && has_service_args == 0 )); then
+  show_compose_status_snapshot
 fi
 
 if (( compose_status != 0 )); then
@@ -3107,7 +3197,8 @@ echo -e "${CYAN}${BOLD}Dashboard URL:${RESET} ${public_url}"
 echo
 
 if (( upgrade == 1 && pending_runtime_upgrade == 1 )) && [[ -n "${SEKANT_DASHBOARD_VERSION:-}" ]]; then
-  echo "UPGRADE TO VERISON ${SEKANT_DASHBOARD_VERSION} Done"
+  echo -e "${GREEN}${BOLD}Upgraded to Version ${SEKANT_DASHBOARD_VERSION} !!!${RESET}"
+  echo
 fi
 
 if [[ -n "$upgrade_log_file" ]]; then
