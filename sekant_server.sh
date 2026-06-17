@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.5.6"
+SEKANT_DASHBOARD_VERSION="1.6.0"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -1116,7 +1116,7 @@ run_cmd_with_max_wait() {
     fi
     if (( quiet == 1 )); then
       if (( (SECONDS - start_seconds) > 0 && (SECONDS - start_seconds) % 10 == 0 )); then
-        echo -e "${DIM}...still working (${SECONDS - start_seconds}s)${RESET}" >&2
+        echo -e "${DIM}...still working ($((SECONDS - start_seconds))s)${RESET}" >&2
       fi
     fi
     sleep 1

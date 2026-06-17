@@ -157,7 +157,7 @@ CREATE TABLE IF NOT EXISTS hosted_json_endpoints (
 INSERT INTO hosted_json_endpoints (name, endpoint_path, json_payload, is_active, created_by, updated_by)
 VALUES
   ('License', 'license', '{}'::jsonb, TRUE, 'system', 'system'),
-  ('Test License', 'test-license', '{}'::jsonb, TRUE, 'system', 'system')
+  ('Test License', 'test_license', '{}'::jsonb, TRUE, 'system', 'system')
 ON CONFLICT (endpoint_path) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS alert_rule_channels (
