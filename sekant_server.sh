@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.6.2"
+SEKANT_DASHBOARD_VERSION="1.6.3"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -2730,11 +2730,6 @@ if (( has_secrets_volume == 0 )); then
   print_temp_admin_credentials=1
 elif (( force_reconfigure == 1 )); then
   print_temp_admin_credentials=1
-else
-  existing_temp_admin_password="$(read_volume_file "$secrets_volume_name" "seed_admin_temporary_password" | tr -d '\r' | head -n 1 | xargs || true)"
-  if [[ -z "$existing_temp_admin_password" ]]; then
-    print_temp_admin_credentials=1
-  fi
 fi
 
 installed_version=""
