@@ -1,3 +1,5 @@
+name: sekant
+
 networks:
   sekant-net:
     name: sekant-net
@@ -18,7 +20,7 @@ services:
       PUBLIC_URL: ${PUBLIC_URL:-https://localhost}
       KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
       KEYCLOAK_ADMIN_EMAIL: ${KEYCLOAK_ADMIN_EMAIL:-admin@sekant.local}
-      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:?SEED_ADMIN_PASSWORD is required}
+      RESET_SEEDED_ADMIN_PASSWORD: ${RESET_SEEDED_ADMIN_PASSWORD:-0}
       CH_INGEST_USER: ${CH_INGEST_USER:-ch_ingest}
       FLUENT_BIT_INPUT_PORT: ${FLUENT_BIT_INPUT_PORT:-31415}
       GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
@@ -34,7 +36,7 @@ services:
       - ./certs:/certs:ro
     entrypoint: ["/bin/sh", "-c", "sh /usr/local/bin/init-secrets.sh && tail -f /dev/null"]
     healthcheck:
-      test: ["CMD-SHELL", "ls /run/secrets/keycloak_admin_password && ls /run/secrets/realm-export.json && ls /run/secrets/users.xml && ls /run/secrets/fluent-bit.conf && ls /run/secrets/security_events.lua && ls /run/secrets/Caddyfile"]
+      test: ["CMD-SHELL", "ls /run/secrets/keycloak_admin_password && ls /run/secrets/seed_admin_temporary_password && ls /run/secrets/realm-export.json && ls /run/secrets/users.xml && ls /run/secrets/fluent-bit.conf && ls /run/secrets/security_events.lua && ls /run/secrets/Caddyfile"]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -116,6 +118,7 @@ services:
       KEYCLOAK_REALM: ${KEYCLOAK_REALM:-sekant}
       KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
       KEYCLOAK_ADMIN_EMAIL: ${KEYCLOAK_ADMIN_EMAIL:-admin@sekant.local}
+      RESET_SEEDED_ADMIN_PASSWORD: ${RESET_SEEDED_ADMIN_PASSWORD:-0}
       KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:-backend}
       KEYCLOAK_CLIENT_SECRET_FILE: /run/secrets/keycloak_client_secret
       KEYCLOAK_FRONTEND_CLIENT_ID: ${KEYCLOAK_FRONTEND_CLIENT_ID:-frontend}

@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.6.1"
+SEKANT_DASHBOARD_VERSION="1.6.2"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -85,6 +85,7 @@ force_reconfigure=0
 upgrade=0
 verbose=0
 quiet=0
+erase_data=0
 upgrade_log_file=""
 compose_up_args=()
 operation="install"
@@ -964,7 +965,7 @@ select_yes_no_upgrade() {
 set_operation() {
   local next_operation="$1"
   if (( operation_explicit == 1 )) && [[ "$operation" != "$next_operation" ]]; then
-    echo -e "${CYAN}${BOLD}Error:${RESET} Choose only one of --install, --start, or --stop." >&2
+    echo -e "${CYAN}${BOLD}Error:${RESET} Choose only one of --install, --start, --stop, or --uninstall." >&2
     exit 2
   fi
   operation="$next_operation"
@@ -982,6 +983,12 @@ for arg in "$@"; do
     --stop)
       set_operation "stop"
       ;;
+    --uninstall)
+      set_operation "uninstall"
+      ;;
+    --erase-data)
+      erase_data=1
+      ;;
     --reconfigure)
       force_reconfigure=1
       ;;
@@ -994,6 +1001,10 @@ for arg in "$@"; do
     --quiet)
       quiet=1
       ;;
+    -*)
+      echo -e "${CYAN}${BOLD}Error:${RESET} Unknown flag: ${arg}" >&2
+      exit 2
+      ;;
     *)
       compose_up_args+=("$arg")
       ;;
@@ -1005,7 +1016,11 @@ if [[ "$operation" != "install" && $force_reconfigure -eq 1 ]]; then
   exit 2
 fi
 if [[ "$operation" != "install" && $upgrade -eq 1 ]]; then
-  echo -e "${CYAN}${BOLD}Error:${RESET} --upgrade cannot be combined with --start or --stop." >&2
+  echo -e "${CYAN}${BOLD}Error:${RESET} --upgrade cannot be combined with --start, --stop, or --uninstall." >&2
+  exit 2
+fi
+if [[ "$operation" != "uninstall" && $erase_data -eq 1 ]]; then
+  echo -e "${CYAN}${BOLD}Error:${RESET} --erase-data can only be used with --uninstall." >&2
   exit 2
 fi
 
@@ -1643,6 +1658,22 @@ read_env_value() {
   printf "%s" "${source_line}"
 }
 
+remove_env_value() {
+  local key="$1"
+  local temp_file
+  temp_file="$(mktemp)"
+  if [[ -f "$env_file" ]]; then
+    awk -F= -v k="$key" '$1!=k { print }' "$env_file" > "$temp_file"
+    mv "$temp_file" "$env_file"
+  else
+    rm -f "$temp_file" >/dev/null 2>&1 || true
+  fi
+}
+
+remove_env_file() {
+  rm -f "$env_file" >/dev/null 2>&1 || true
+}
+
 ensure_image_config() {
   local repo_default="sekantsec/management-console"
   local tag_default="latest"
@@ -1769,49 +1800,6 @@ check_for_upgrade_notice() {
 }
 
 check_for_upgrade_notice || true
-
-detect_existing_compose_project() {
-  local suffix_secrets="_sekant_secrets"
-  local prefix=""
-  local matches=()
-
-  while IFS= read -r volume_name; do
-    [[ -z "$volume_name" ]] && continue
-    case "$volume_name" in
-      *"${suffix_secrets}")
-        prefix="${volume_name%$suffix_secrets}"
-        matches+=("$prefix")
-        ;;
-    esac
-  done < <(docker volume ls --format '{{.Name}}')
-
-  if (( ${#matches[@]} == 1 )); then
-    printf "%s" "${matches[0]}"
-    return 0
-  fi
-
-  if (( ${#matches[@]} > 1 )); then
-    echo "Multiple existing Sekant volume sets detected: ${matches[*]}" >&2
-    echo "Set COMPOSE_PROJECT_NAME in .env to choose one explicitly." >&2
-    return 2
-  fi
-
-  return 1
-}
-
-detect_running_compose_project() {
-  local container_name="sekant-caddy"
-  local project=""
-  if docker container inspect "$container_name" >/dev/null 2>&1; then
-    project="$(docker inspect -f '{{ index .Config.Labels "com.docker.compose.project" }}' "$container_name" 2>/dev/null || true)"
-    project="$(trim_whitespace "$project")"
-    if [[ -n "$project" && "$project" != "<no value>" ]]; then
-      printf "%s" "$project"
-      return 0
-    fi
-  fi
-  return 1
-}
 
 has_running_sekant_deployment() {
   docker container inspect "sekant-caddy" >/dev/null 2>&1 && return 0
@@ -1959,6 +1947,21 @@ compose_down_preserving_volumes() {
     return 0
   fi
   return "$status"
+}
+
+remove_named_volumes_if_exist() {
+  local volume_name
+  local -a volumes_to_remove=()
+
+  for volume_name in "$@"; do
+    [[ -z "$volume_name" ]] && continue
+    if docker volume inspect "$volume_name" >/dev/null 2>&1; then
+      volumes_to_remove+=("$volume_name")
+    fi
+  done
+
+  (( ${#volumes_to_remove[@]} == 0 )) && return 0
+  docker volume rm "${volumes_to_remove[@]}" >/dev/null 2>&1 || true
 }
 
 resolve_compose_command() {
@@ -2621,19 +2624,7 @@ if [[ "$operation" == "install" ]]; then
   generate_platform_override
 fi
 
-existing_compose_project="$(trim_whitespace "$(read_env_value "COMPOSE_PROJECT_NAME")")"
-if [[ -z "$existing_compose_project" ]]; then
-  existing_compose_project="$(detect_running_compose_project 2>/dev/null || true)"
-fi
-if [[ -z "$existing_compose_project" ]]; then
-  existing_compose_project="$(detect_existing_compose_project 2>/dev/null || true)"
-fi
-existing_compose_project="${existing_compose_project:-sekant}"
-
-compose_project_current="$(trim_whitespace "$(read_env_value "COMPOSE_PROJECT_NAME")")"
-if [[ -z "$compose_project_current" ]]; then
-  write_env_value "COMPOSE_PROJECT_NAME" "$existing_compose_project"
-fi
+existing_compose_project="sekant"
 
 secrets_volume_name="${existing_compose_project}_sekant_secrets"
 clickhouse_volume_name="${existing_compose_project}_clickhouse_data"
@@ -2653,6 +2644,23 @@ if docker volume inspect "$postgres_volume_name" >/dev/null 2>&1; then
 fi
 if (( has_secrets_volume == 1 || has_database_volume == 1 || has_postgres_volume == 1 )); then
   has_existing_volumes=1
+fi
+
+if [[ "$operation" == "uninstall" ]]; then
+  cd "$root_dir"
+  if (( erase_data == 1 )); then
+    echo -e "${CYAN}${BOLD}Uninstalling Sekant containers, removing .env, and erasing volumes...${RESET}"
+    compose_down_preserving_volumes "$existing_compose_project"
+    force_remove_sekant_containers "$existing_compose_project"
+    remove_named_volumes_if_exist "$secrets_volume_name" "$clickhouse_volume_name" "$postgres_volume_name"
+  else
+    echo -e "${CYAN}${BOLD}Uninstalling Sekant containers and removing .env (preserving volumes)...${RESET}"
+    compose_down_preserving_volumes "$existing_compose_project"
+    force_remove_sekant_containers "$existing_compose_project"
+  fi
+  remove_env_file
+  echo -e "${GREEN}${BOLD}Uninstall complete.${RESET}"
+  exit 0
 fi
 
 resolve_helper_image() {
@@ -2717,6 +2725,18 @@ write_volume_file() {
   docker run -i --rm -v "${volume_name}:/vol" "$helper_image" sh -c "cat > \"/vol/${file_path}\""
 }
 
+print_temp_admin_credentials=0
+if (( has_secrets_volume == 0 )); then
+  print_temp_admin_credentials=1
+elif (( force_reconfigure == 1 )); then
+  print_temp_admin_credentials=1
+else
+  existing_temp_admin_password="$(read_volume_file "$secrets_volume_name" "seed_admin_temporary_password" | tr -d '\r' | head -n 1 | xargs || true)"
+  if [[ -z "$existing_temp_admin_password" ]]; then
+    print_temp_admin_credentials=1
+  fi
+fi
+
 installed_version=""
 installed_version_normalized=""
 pending_runtime_upgrade=0
@@ -2741,7 +2761,6 @@ fi
 
 seed_admin_username="admin"
 seed_admin_email=""
-seed_admin_password=""
 dashboard_https_port_default="443"
 clickhouse_retention_days_default="730"
 dashboard_https_port="$dashboard_https_port_default"
@@ -2770,8 +2789,7 @@ configured_clickhouse_retention_days_default="${configured_clickhouse_retention_
 can_reuse_env=0
 if (( force_reconfigure == 0 )); then
   seed_admin_email_probe="$(trim_whitespace "$(read_env_value "KEYCLOAK_ADMIN_EMAIL")")"
-  seed_admin_password_probe="$(trim_whitespace "$(read_env_value "SEED_ADMIN_PASSWORD")")"
-  if [[ -n "$seed_admin_email_probe" ]] && is_valid_admin_password "$seed_admin_password_probe"; then
+  if [[ -n "$seed_admin_email_probe" ]]; then
     can_reuse_env=1
   fi
 fi
@@ -2794,19 +2812,6 @@ if (( force_reconfigure == 0 && can_reuse_env == 1 )); then
   if [[ -z "$seed_admin_email" ]]; then
     echo -e "${CYAN}${BOLD}Error:${RESET} KEYCLOAK_ADMIN_EMAIL is required but missing in .env." >&2
     echo "Run with --reconfigure to set the seeded admin email." >&2
-    exit 1
-  fi
-  seed_admin_password="$(read_env_value "SEED_ADMIN_PASSWORD")"
-  seed_admin_password="$(trim_whitespace "$seed_admin_password")"
-  if [[ -z "$seed_admin_password" ]]; then
-    echo -e "${CYAN}${BOLD}Error:${RESET} SEED_ADMIN_PASSWORD is required but missing in .env." >&2
-    echo "Run with --reconfigure to set the seeded admin password." >&2
-    exit 1
-  fi
-  if ! is_valid_admin_password "$seed_admin_password"; then
-    echo -e "${CYAN}${BOLD}Error:${RESET} SEED_ADMIN_PASSWORD in .env does not meet password complexity requirements." >&2
-    echo "It must be at least 8 characters and include at least one lowercase letter, one uppercase letter, one number, and one special character." >&2
-    echo "Run with --reconfigure to update the seeded admin password." >&2
     exit 1
   fi
   dashboard_https_port="$(read_env_value "DASHBOARD_HTTPS_PORT")"
@@ -2842,7 +2847,6 @@ else
   else
     seed_admin_email="$(prompt_email_required "Admin Email : ")"
   fi
-  seed_admin_password="$(prompt_admin_password_required "Admin Password : ")"
 
   echo ""
   echo -e "${CYAN}${BOLD}Database${RESET}"
@@ -2874,7 +2878,7 @@ write_env_value "KEYCLOAK_URL" "http://keycloak:8080"
 
 write_env_value "KEYCLOAK_ADMIN" "$seed_admin_username"
 write_env_value "KEYCLOAK_ADMIN_EMAIL" "$seed_admin_email"
-write_env_value "SEED_ADMIN_PASSWORD" "$seed_admin_password"
+remove_env_value "SEED_ADMIN_PASSWORD"
 write_env_value "KEYCLOAK_HOSTNAME" "$public_hostname"
 write_env_value "CLICKHOUSE_RETENTION_DAYS" "$clickhouse_retention_days"
 
@@ -2975,6 +2979,11 @@ if [[ "$operation" == "install" ]] && (( upgrade == 1 || has_existing_runtime ==
     remove_container_if_exists "sekant-fluent-bit"
     remove_container_if_exists "sekant-init-secrets"
   fi
+fi
+
+export RESET_SEEDED_ADMIN_PASSWORD=0
+if [[ "$operation" == "install" && $force_reconfigure -eq 1 ]]; then
+  export RESET_SEEDED_ADMIN_PASSWORD=1
 fi
 
 echo
@@ -3195,6 +3204,16 @@ fi
 echo
 echo -e "${CYAN}${BOLD}Dashboard URL:${RESET} ${public_url}"
 echo
+
+if (( print_temp_admin_credentials == 1 )); then
+  seeded_temp_admin_password="$(read_volume_file "$secrets_volume_name" "seed_admin_temporary_password" | tr -d '\r' | head -n 1 | xargs || true)"
+  if [[ -n "$seeded_temp_admin_password" ]]; then
+    echo "username: ${seed_admin_username}"
+    echo "temporary password: ${seeded_temp_admin_password}"
+    echo "(CHANGE THIS TEMPORARY PASSWORD AT FIRST LOGIN)"
+    echo
+  fi
+fi
 
 if (( upgrade == 1 && pending_runtime_upgrade == 1 )) && [[ -n "${SEKANT_DASHBOARD_VERSION:-}" ]]; then
   echo -e "${GREEN}${BOLD}Upgraded to Version ${SEKANT_DASHBOARD_VERSION} !!!${RESET}"
