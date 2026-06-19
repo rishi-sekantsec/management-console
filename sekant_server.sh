@@ -1221,6 +1221,59 @@ announce_compose_pull_images() {
   done <<<"$images_output"
 }
 
+# Verify the registry is reachable for a (typically private) image before
+# pulling. If it is not — Docker Hub rate limit, missing/expired auth, or a
+# private repo — guide the operator through `docker login` and WAIT for them to
+# finish, then retry. `docker login` runs under the active DOCKER_CONFIG, so on
+# Linux it writes into the script's isolated config and the credential persists
+# for the pull that immediately follows. No-op when the image is already
+# reachable, so it is cheap to call unconditionally before a pull.
+ensure_registry_auth() {
+  local probe_image="$1"
+  [[ -z "$probe_image" ]] && return 0
+
+  if docker manifest inspect "$probe_image" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local attempts=0 max_attempts=3 err ans
+  while (( attempts < max_attempts )); do
+    err="$(docker manifest inspect "$probe_image" 2>&1 || true)"
+
+    echo -e "${CYAN}${BOLD}Registry access needed:${RESET} cannot reach ${probe_image}." >&2
+    if printf '%s' "$err" | grep -qi "rate limit"; then
+      echo "Docker Hub anonymous pull rate limit reached — logging in raises it substantially." >&2
+    elif printf '%s' "$err" | grep -qiE "unauthorized|denied|authentication required|forbidden|no basic auth"; then
+      echo "This image requires registry authentication." >&2
+    elif [[ -n "$err" ]]; then
+      printf '%s\n' "$err" | head -2 >&2
+    fi
+
+    # Non-interactive (piped/CI): cannot prompt — print exact recovery and stop.
+    if [[ ! -t 0 || ! -t 2 ]]; then
+      echo "Run:  docker login   then re-run ${script_display_name}." >&2
+      return 1
+    fi
+
+    printf "%s" "Log in to the registry now? [Y/n]: " >&2
+    read -r ans || ans=""
+    case "$ans" in
+      n|N|no|NO|No) echo "Skipping login — the pull will likely fail." >&2; return 1 ;;
+    esac
+
+    # Interactive docker login blocks until the operator finishes logging in.
+    docker login || true
+
+    if docker manifest inspect "$probe_image" >/dev/null 2>&1; then
+      echo -e "${CYAN}${BOLD}Registry access confirmed.${RESET}" >&2
+      return 0
+    fi
+    echo "Still cannot reach ${probe_image} after login." >&2
+    attempts=$(( attempts + 1 ))
+  done
+  return 1
+}
+
 show_compose_status_snapshot() {
   show_upgrade_progress || return 0
   print_upgrade_progress "Container status:"
@@ -2481,52 +2534,156 @@ linux_host_resource_preflight
 # global override, so clear any inherited default first.
 unset DOCKER_DEFAULT_PLATFORM
 
-host_arch_raw="$(uname -m 2>/dev/null || true)"
-case "$host_arch_raw" in
-  x86_64|amd64)
-    host_arch="amd64"
-    ;;
-  arm64|aarch64)
-    host_arch="arm64"
-    ;;
-  *)
-    host_arch=""
-    ;;
-esac
-host_platform="linux/${host_arch}"
+# Emulation target for images that lack a native host build. Configurable so a
+# non-amd64 host can choose a different fallback; amd64 is the most universally
+# emulatable (Rosetta on macOS, qemu/binfmt on Linux).
+emulation_platform="${SEKANT_EMULATION_PLATFORM:-linux/amd64}"
+
+# Effective target architecture. Ask the Docker daemon first — its GOARCH is
+# authoritative and already normalized (e.g. arm64 on Apple Silicon) — and fall
+# back to mapping uname -m when the daemon is silent. Covers the popular arches:
+# amd64, arm64, arm/v7, arm/v6, ppc64le, s390x, riscv64, 386.
+detect_host_platform() {
+  local arch="" variant="" uname_m
+  arch="$(docker version -f '{{.Server.Arch}}' 2>/dev/null || true)"
+  uname_m="$(uname -m 2>/dev/null || true)"
+  if [[ -z "$arch" ]]; then
+    case "$uname_m" in
+      x86_64|amd64)        arch="amd64" ;;
+      aarch64|arm64)       arch="arm64" ;;
+      armv7l|armv7|armhf)  arch="arm"; variant="v7" ;;
+      armv6l|armv6)        arch="arm"; variant="v6" ;;
+      ppc64le)             arch="ppc64le" ;;
+      s390x)               arch="s390x" ;;
+      riscv64)             arch="riscv64" ;;
+      i386|i686)           arch="386" ;;
+      *)                   arch="" ;;
+    esac
+  fi
+  # The daemon reports arch=arm for 32-bit; recover the variant from uname.
+  if [[ "$arch" == "arm" && -z "$variant" ]]; then
+    case "$uname_m" in
+      armv7l|armv7) variant="v7" ;;
+      armv6l|armv6) variant="v6" ;;
+    esac
+  fi
+  host_arch="$arch"
+  host_variant="$variant"
+  if [[ -n "$host_variant" ]]; then
+    host_platform="linux/${host_arch}/${host_variant}"
+  else
+    host_platform="linux/${host_arch}"
+  fi
+}
+detect_host_platform
+
+# Linux platforms an image provides, as arch[/variant] tokens, parsed properly
+# from the multi-arch index AND single manifest. buildx fallback covers the
+# containerd image store. Registry-only: empty output means "couldn't reach the
+# registry" (rate limit / auth / offline), which the caller treats distinctly.
+image_registry_platforms() {
+  local image="$1" raw=""
+  if command -v timeout >/dev/null 2>&1; then
+    raw="$(timeout "${preflight_timeout_sec}" docker manifest inspect "$image" 2>/dev/null || true)"
+  else
+    raw="$(docker manifest inspect "$image" 2>/dev/null || true)"
+  fi
+  [[ -z "$raw" ]] && raw="$(docker buildx imagetools inspect --raw "$image" 2>/dev/null || true)"
+  [[ -z "$raw" ]] && return 0
+  printf '%s' "$raw" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+def emit(p):
+    if not p or p.get("os") != "linux":
+        return
+    a = p.get("architecture"); v = p.get("variant")
+    if a:
+        print(a + ("/" + v if v else ""))
+for m in (d.get("manifests") or []):
+    emit(m.get("platform"))
+if "architecture" in d:
+    emit({"os": d.get("os", "linux"), "architecture": d["architecture"], "variant": d.get("variant")})
+' 2>/dev/null || true
+}
+
+# Architecture of a locally-cached single-arch image (offline fallback).
+image_local_platform() {
+  local image="$1" la lv
+  la="$(docker image inspect "$image" --format '{{.Architecture}}' 2>/dev/null || true)"
+  [[ -z "$la" ]] && return 0
+  lv="$(docker image inspect "$image" --format '{{.Variant}}' 2>/dev/null || true)"
+  printf '%s\n' "${la}${lv:+/$lv}"
+}
+
+# Does a newline-separated platform list satisfy the host? Variant only matters
+# for 32-bit arm (v6/v7); for arm64 (carries v8), amd64, ppc64le, s390x, riscv64
+# the variant is not selective, so match on the architecture component.
+_platform_list_has_host() {
+  local list="$1" entry e_arch e_var
+  while IFS= read -r entry; do
+    [[ -z "$entry" ]] && continue
+    e_arch="${entry%%/*}"
+    e_var="${entry#"$e_arch"}"; e_var="${e_var#/}"
+    [[ "$e_arch" != "$host_arch" ]] && continue
+    if [[ "$host_arch" == "arm" ]]; then
+      [[ -z "$host_variant" || "$e_var" == "$host_variant" ]] && return 0
+      # A v7 host can also run v6 images.
+      [[ "$host_variant" == "v7" && "$e_var" == "v6" ]] && return 0
+    else
+      return 0
+    fi
+  done <<<"$list"
+  return 1
+}
+
+# Choose a pin target the image actually provides: prefer the configured
+# emulation arch (matched on architecture, ignoring variant), else the first
+# available linux platform.
+choose_pin_platform() {
+  local list="$1" emu_arch="${emulation_platform#linux/}"
+  emu_arch="${emu_arch%%/*}"
+  local entry e_arch
+  while IFS= read -r entry; do
+    [[ -z "$entry" ]] && continue
+    e_arch="${entry%%/*}"
+    [[ "$e_arch" == "$emu_arch" ]] && { echo "$emulation_platform"; return; }
+  done <<<"$list"
+  local first; first="$(printf '%s\n' "$list" | head -n1)"
+  echo "linux/${first}"
+}
 
 image_decision() {
-  # Print one of: pin | native | native-local | unknown
-  #   pin          -> image lacks a native ${host_arch} variant
-  #   native       -> registry confirms a native ${host_arch} variant
-  #   native-local -> local-only image matches ${host_arch}; no remote pull
-  #   unknown      -> registry/local metadata unavailable; let the daemon decide
+  # Print one of: native | native-local | pin:<platform> | unknown
+  #   native        -> registry confirms a native ${host_platform} build (pull it)
+  #   native-local  -> local-only image already matches the host (no remote pull)
+  #   pin:<platform>-> image lacks a host build; run it on <platform> via emulation
+  #   unknown       -> registry unreachable AND not cached locally (rate limit /
+  #                    auth / offline); caller must NOT silently treat as native
   local image="$1"
   [[ -z "$host_arch" ]] && { echo unknown; return; }
 
-  local manifest
-  if command -v timeout >/dev/null 2>&1; then
-    manifest="$(timeout "${preflight_timeout_sec}" docker manifest inspect "$image" 2>/dev/null || true)"
-  else
-    manifest="$(docker manifest inspect "$image" 2>/dev/null || true)"
-  fi
-  if [[ -n "$manifest" ]]; then
-    if grep -Eq "\"architecture\"[[:space:]]*:[[:space:]]*\"${host_arch}\"" <<<"$manifest"; then
+  local rp
+  rp="$(image_registry_platforms "$image")"
+  if [[ -n "$rp" ]]; then
+    if _platform_list_has_host "$rp"; then
       echo native
-      return
+    else
+      echo "pin:$(choose_pin_platform "$rp")"
     fi
-    echo pin
     return
   fi
 
-  local local_arch
-  local_arch="$(docker image inspect "$image" --format '{{.Architecture}}' 2>/dev/null || true)"
-  if [[ -n "$local_arch" ]]; then
-    if [[ "$local_arch" == "$host_arch" ]]; then
+  local lp
+  lp="$(image_local_platform "$image")"
+  if [[ -n "$lp" ]]; then
+    if _platform_list_has_host "$lp"; then
       echo native-local
-      return
+    else
+      echo "pin:linux/${lp}"
     fi
-    echo pin
     return
   fi
 
@@ -2538,7 +2695,12 @@ generate_platform_override() {
   if [[ "${SEKANT_SKIP_PLATFORM_PROBE:-}" == "1" ]]; then
     return 0
   fi
-  if [[ "$host_arch" == "amd64" ]]; then
+  # Fast path: when the host is amd64 and the emulation fallback is also amd64
+  # (the default), pinning can never help — an image either provides amd64
+  # (native) or it doesn't (and we'd "pin" it to the host arch, a no-op). Skip
+  # the probe entirely. To handle e.g. an arm64-only image on an amd64 host,
+  # set SEKANT_EMULATION_PLATFORM=linux/arm64 to opt back into probing.
+  if [[ "$host_arch" == "amd64" && "$emulation_platform" == "linux/amd64" ]]; then
     return 0
   fi
   command -v python3 >/dev/null 2>&1 || return 0
@@ -2562,17 +2724,23 @@ for name, svc in (data.get("services") or {}).items():
 ' 2>/dev/null || true)"
   [[ -z "$pairs" ]] && return 0
 
-  local -a pinned=() native_pulls=()
+  # Parallel arrays: pin_svcs[i] runs on pin_plats[i]. native_pulls are fetched
+  # for the host arch; unknown_imgs failed to probe and are pinned best-effort.
+  local -a pin_svcs=() pin_plats=() native_pulls=() unknown_imgs=()
   local svc img decision
   while IFS=$'\t' read -r svc img; do
     [[ -z "$svc" || -z "$img" ]] && continue
     decision="$(image_decision "$img")"
     case "$decision" in
-      pin)
-        pinned+=("$svc")
-        ;;
-      native)
-        native_pulls+=("$img")
+      native)        native_pulls+=("$img") ;;
+      native-local)  : ;;  # already correct locally; nothing to pull or pin
+      pin:*)         pin_svcs+=("$svc"); pin_plats+=("${decision#pin:}") ;;
+      unknown)
+        # Probe failed (rate limit / auth / offline). Do NOT fall through to a
+        # silent "native" — pin to the emulation fallback as a best effort and
+        # warn, so an amd64-only image still launches and the operator is told.
+        unknown_imgs+=("$img")
+        pin_svcs+=("$svc"); pin_plats+=("$emulation_platform")
         ;;
     esac
   done <<<"$pairs"
@@ -2594,7 +2762,12 @@ for name, svc in (data.get("services") or {}).items():
     done
   fi
 
-  if (( ${#pinned[@]} == 0 )); then
+  if (( ${#unknown_imgs[@]} > 0 && quiet == 0 )); then
+    echo -e "${CYAN}${BOLD}Platform:${RESET} could not probe ${#unknown_imgs[@]} image(s) (registry unreachable — rate limit, auth, or offline): ${unknown_imgs[*]}" >&2
+    echo "Defaulting those to ${emulation_platform}; if a pull then fails, run 'docker login' and re-run ${script_display_name}." >&2
+  fi
+
+  if (( ${#pin_svcs[@]} == 0 )); then
     rm -f "${platform_override_file}"
     if (( quiet == 0 )); then
       echo -e "${CYAN}${BOLD}Platform:${RESET} all images support ${host_platform} natively."
@@ -2604,18 +2777,22 @@ for name, svc in (data.get("services") or {}).items():
 
   {
     echo "# Auto-generated by ${script_display_name}. Do not edit."
-    echo "# Pins linux/amd64 only for services lacking a native ${host_arch} image."
+    echo "# Pins a non-native platform only for services whose image lacks a ${host_platform} build."
     echo "services:"
-    for svc in "${pinned[@]}"; do
-      printf '  %s:\n    platform: linux/amd64\n' "$svc"
+    local i
+    for (( i = 0; i < ${#pin_svcs[@]}; i++ )); do
+      printf '  %s:\n    platform: %s\n' "${pin_svcs[$i]}" "${pin_plats[$i]}"
     done
   } > "${platform_override_file}"
   compose_file_args+=("-f" "${platform_override_file}")
 
   if (( quiet == 0 )); then
-    echo -e "${CYAN}${BOLD}Platform:${RESET} host is ${host_platform}. Pinning linux/amd64 for ${#pinned[@]} service(s) lacking a native ${host_arch} image: ${pinned[*]}"
-    if [[ "$host_arch" == "arm64" && "$host_os" == "Darwin" ]]; then
+    echo -e "${CYAN}${BOLD}Platform:${RESET} host is ${host_platform}. Pinning a non-native platform for ${#pin_svcs[@]} service(s) lacking a ${host_platform} image: ${pin_svcs[*]}"
+    if [[ "$host_os" == "Darwin" ]]; then
       echo "Those services run via emulation - ensure Docker Desktop has 'Use Rosetta for x86/amd64 emulation' enabled." >&2
+    elif [[ "$host_os" == "Linux" ]] && ! ls /proc/sys/fs/binfmt_misc/qemu-* >/dev/null 2>&1; then
+      echo "Those services need CPU emulation - register qemu/binfmt once with:" >&2
+      echo "  docker run --privileged --rm tonistiigi/binfmt --install all" >&2
     fi
   fi
 }
@@ -3023,6 +3200,9 @@ else
     if (( quiet == 0 )); then
       echo "Pulling Docker images from ${sekant_image_repo}..." >&2
     fi
+    # Make sure we can actually reach the (private) images before pulling; if
+    # not, prompt for `docker login` and wait rather than failing the pull.
+    ensure_registry_auth "${required_images[0]}" || true
     announce_compose_pull_images
     set +e
     run_compose pull
