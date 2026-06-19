@@ -24,7 +24,7 @@ cd sekant
 Run this in the empty folder you created above. The `.` at the end clones the repository into the current directory.
 
 ```bash
-git clone --branch v1.6.3 --depth 1 https://github.com/rishi-sekantsec/management-console .
+git clone --branch v1.6.4 --depth 1 https://github.com/rishi-sekantsec/management-console .
 ```
 
 ## 2) Start the Installer
@@ -121,31 +121,11 @@ bash sekant_server.sh --install --reconfigure
 - Re-prompts for hostname, ports, admin email, and database setup values.
 - Keeps existing data unless you manually remove the current installation data.
 
-#### Uninstall Management Console
-
-```bash
-bash sekant_server.sh --uninstall
-```
-
-- Removes Sekant containers.
-- Removes the local `.env`.
-- Preserves Docker volumes and existing stored data.
-
-#### Uninstall And Erase Data
-
-```bash
-bash sekant_server.sh --uninstall --erase-data
-```
-
-- Removes Sekant containers.
-- Removes the local `.env`.
-- Removes Sekant Docker volumes, including persisted data.
 
 #### Notes
 
-- Use only one of `--install`, `--start`, `--stop`, or `--uninstall` at a time.
+- Use only one of `--install`, `--start`, `--upgrade` or `--stop` at a time.
 - `--reconfigure` is only valid with install mode.
-- `--erase-data` is only valid together with `--uninstall`.
 - Any unknown flag now fails fast and the script exits without doing anything.
 
 ### Upgrade
