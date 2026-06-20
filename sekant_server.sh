@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.7.4"
+SEKANT_DASHBOARD_VERSION="1.7.5"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -3134,6 +3134,16 @@ migrate_legacy_postgres_volume_for_pg18_upgrade() {
   return 0
 }
 
+ensure_runtime_external_postgres_volume() {
+  if docker volume inspect "$postgres_volume_name" >/dev/null 2>&1; then
+    return 0
+  fi
+  if ! docker volume create "$postgres_volume_name" >/dev/null; then
+    echo -e "${CYAN}${BOLD}Error:${RESET} Could not create the required Docker volume ${postgres_volume_name}." >&2
+    return 1
+  fi
+}
+
 print_temp_admin_credentials=0
 if (( has_secrets_volume == 0 )); then
   print_temp_admin_credentials=1
@@ -3479,6 +3489,10 @@ if ! docker run --rm "${init_secrets_check_image}" sh -c "grep -q \"Caddyfile pr
 fi
 
 if ! migrate_legacy_postgres_volume_for_pg18_upgrade; then
+  exit 1
+fi
+
+if ! ensure_runtime_external_postgres_volume; then
   exit 1
 fi
 

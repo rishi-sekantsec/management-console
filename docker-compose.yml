@@ -8,6 +8,8 @@ volumes:
   caddy_data:
   clickhouse_data:
   postgres_data:
+    external: true
+    name: sekant_postgres_data
   sekant_secrets:
 
 services:
@@ -65,7 +67,7 @@ services:
       init-secrets:
         condition: service_healthy
       nginx:
-        condition: service_started
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget --quiet --spider --no-check-certificate https://127.0.0.1/health || exit 1"]
       interval: 10s
@@ -80,9 +82,12 @@ services:
     container_name: sekant-nginx
     restart: unless-stopped
     depends_on:
-      - frontend
-      - backend
-      - keycloak
+      frontend:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "nginx -t || exit 1"]
       interval: 10s
@@ -150,15 +155,15 @@ services:
       init-secrets:
         condition: service_healthy
       keycloak:
-        condition: service_started
+        condition: service_healthy
       clickhouse:
-        condition: service_started
+        condition: service_healthy
       postgres:
-        condition: service_started
+        condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
       sql-validator:
-        condition: service_started
+        condition: service_healthy
     volumes:
       - sekant_secrets:/run/secrets
     healthcheck:
@@ -224,7 +229,7 @@ services:
       init-secrets:
         condition: service_healthy
       postgres:
-        condition: service_started
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "timeout 1 bash -c 'cat < /dev/null > /dev/tcp/127.0.0.1/8080' || exit 1"]
       interval: 10s
@@ -347,7 +352,7 @@ services:
       init-secrets:
         condition: service_healthy
       clickhouse:
-        condition: service_started
+        condition: service_healthy
     volumes:
       - sekant_secrets:/run/secrets:ro
     healthcheck:
@@ -364,17 +369,37 @@ services:
     container_name: sekant-readiness
     restart: unless-stopped
     depends_on:
-      - caddy
-      - nginx
-      - backend
-      - frontend
-      - keycloak
-      - clickhouse
-      - postgres
-      - redis
-      - sql-validator
-      - fluent-bit
-    command: ["/bin/sh", "-c", "echo ready >/tmp/status && echo 'Sekant Platform is READY!' && tail -f /dev/null"]
+      caddy:
+        condition: service_healthy
+      nginx:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      sql-validator:
+        condition: service_healthy
+      fluent-bit:
+        condition: service_healthy
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        wget --quiet --spider http://frontend:3000/health
+        wget --quiet --spider http://backend:4000/health
+        wget --quiet --spider http://nginx/health
+        wget --quiet --spider --no-check-certificate --header='Host: localhost' https://caddy/health
+        echo ready >/tmp/status
+        echo 'Sekant Platform is READY!'
+        tail -f /dev/null
     healthcheck:
       test: ["CMD-SHELL", "grep -q '^ready$' /tmp/status"]
       interval: 5s
