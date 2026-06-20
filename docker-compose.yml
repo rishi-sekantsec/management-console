@@ -171,7 +171,7 @@ services:
       - sekant-net
 
   keycloak:
-    image: quay.io/keycloak/keycloak:26.6.2
+    image: quay.io/keycloak/keycloak:26.6.3
     container_name: sekant-keycloak
     restart: unless-stopped
     environment:
@@ -305,7 +305,7 @@ services:
         condition: service_healthy
 
   redis:
-    image: redis:8.6.3-alpine
+    image: redis:8.8.0-alpine
     container_name: sekant-redis
     restart: unless-stopped
     command: ["redis-server", "--save", "", "--appendonly", "no"]
