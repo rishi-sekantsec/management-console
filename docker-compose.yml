@@ -171,7 +171,7 @@ services:
       - sekant-net
 
   keycloak:
-    image: quay.io/keycloak/keycloak:23.0
+    image: quay.io/keycloak/keycloak:26.6.2
     container_name: sekant-keycloak
     restart: unless-stopped
     environment:
@@ -215,7 +215,7 @@ services:
           keycloak_hostname="$$public_scheme://$$keycloak_hostname"
         fi
         keycloak_hostname="$${keycloak_hostname%/}"
-        exec /opt/keycloak/bin/kc.sh start --http-enabled=true --import-realm --proxy=edge --hostname-url="$$PUBLIC_URL" --hostname-strict=true
+        exec /opt/keycloak/bin/kc.sh start --http-enabled=true --import-realm --proxy-headers=xforwarded --hostname="$$keycloak_hostname" --hostname-strict=true
     expose:
       - "8080"
     volumes:
@@ -235,7 +235,7 @@ services:
       - sekant-net
 
   clickhouse:
-    image: clickhouse/clickhouse-server:24.8
+    image: clickhouse/clickhouse-server:26.5.1.882
     container_name: sekant-clickhouse
     restart: unless-stopped
     expose:
@@ -279,7 +279,7 @@ services:
         condition: service_healthy
 
   postgres:
-    image: postgres:15-alpine
+    image: postgres:18.4-alpine
     container_name: sekant-postgres
     restart: unless-stopped
     environment:
@@ -289,7 +289,7 @@ services:
     expose:
       - "5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql
       - ./postgres:/docker-entrypoint-initdb.d:ro
       - sekant_secrets:/run/secrets:ro
     healthcheck:
@@ -305,7 +305,7 @@ services:
         condition: service_healthy
 
   redis:
-    image: redis:7-alpine
+    image: redis:8.6.3-alpine
     container_name: sekant-redis
     restart: unless-stopped
     command: ["redis-server", "--save", "", "--appendonly", "no"]

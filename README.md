@@ -3,6 +3,8 @@
 ## Installation Requirements
 
 - `bash`
+- `curl`
+- `wget`
 - `git`
 - `docker`
 - `docker compose`
@@ -24,7 +26,7 @@ cd sekant
 Run this in the empty folder you created above. The `.` at the end clones the repository into the current directory.
 
 ```bash
-git clone --branch v1.6.4 --depth 1 https://github.com/rishi-sekantsec/management-console .
+git clone --branch v1.7.0 --depth 1 https://github.com/rishi-sekantsec/management-console .
 ```
 
 ## 2) Start the Installer
@@ -135,3 +137,5 @@ To force an upgrade, update the distribution files and restart using the latest 
 ```bash
 bash sekant_server.sh --upgrade
 ```
+
+- Old PostgreSQL data from the previous `postgres:15-alpine` volume layout is migrated automatically during upgrade, and the script keeps a rollback snapshot volume before switching to PostgreSQL 18.

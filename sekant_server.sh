@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.6.4"
+SEKANT_DASHBOARD_VERSION="1.7.0"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -2902,6 +2902,238 @@ write_volume_file() {
   docker run -i --rm -v "${volume_name}:/vol" "$helper_image" sh -c "cat > \"/vol/${file_path}\""
 }
 
+volume_path_exists() {
+  local volume_name="$1"
+  local path_inside_volume="$2"
+  local helper_image
+  helper_image="$(resolve_helper_image)"
+  docker run --rm -v "${volume_name}:/vol" "$helper_image" sh -c "test -e \"/vol/${path_inside_volume}\""
+}
+
+copy_docker_volume_contents() {
+  local src_volume="$1"
+  local dest_volume="$2"
+  local helper_image
+  helper_image="$(resolve_helper_image)"
+  docker run --rm -v "${src_volume}:/from:ro" -v "${dest_volume}:/to" "$helper_image" \
+    sh -ec 'find /to -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true; cp -a /from/. /to/'
+}
+
+detect_postgres_admin_user() {
+  local container_name="$1"
+  local preferred_user="$2"
+  local candidate
+  for candidate in postgres "$preferred_user"; do
+    [[ -z "$candidate" ]] && continue
+    if postgres_query_with_retry "$container_name" "$candidate" "postgres" "SELECT 1;" 30 >/dev/null 2>&1; then
+      printf "%s" "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+dump_postgres_database_with_retry() {
+  local container_name="$1"
+  local admin_user="$2"
+  local database_name="$3"
+  local dump_file="$4"
+  local timeout_seconds="${5:-240}"
+  local start_seconds="$SECONDS"
+  local status=1
+
+  while (( SECONDS - start_seconds <= timeout_seconds )); do
+    set +e
+    docker exec -i "$container_name" pg_dump \
+      --clean \
+      --if-exists \
+      --no-owner \
+      --no-privileges \
+      -U "$admin_user" \
+      -d "$database_name" >"$dump_file"
+    status=$?
+    set -e
+    if (( status == 0 )); then
+      return 0
+    fi
+    sleep 2
+  done
+
+  return "$status"
+}
+
+restore_postgres_database_dump_with_retry() {
+  local container_name="$1"
+  local admin_user="$2"
+  local database_name="$3"
+  local dump_file="$4"
+  local timeout_seconds="${5:-300}"
+  local start_seconds="$SECONDS"
+  local status=1
+
+  while (( SECONDS - start_seconds <= timeout_seconds )); do
+    set +e
+    docker exec -i "$container_name" psql -v ON_ERROR_STOP=1 -U "$admin_user" -d "$database_name" <"$dump_file"
+    status=$?
+    set -e
+    if (( status == 0 )); then
+      return 0
+    fi
+    sleep 2
+  done
+
+  return "$status"
+}
+
+legacy_postgres_volume_major_version() {
+  local volume_name="$1"
+  local raw_version=""
+  if ! volume_path_exists "$volume_name" "PG_VERSION"; then
+    return 0
+  fi
+  raw_version="$(read_volume_file "$volume_name" "PG_VERSION" | tr -d '\r\n' | head -n 1)"
+  printf "%s" "$raw_version" | sed -nE 's/^([0-9]+).*$/\1/p' | head -n 1
+}
+
+migrate_legacy_postgres_volume_for_pg18_upgrade() {
+  (( upgrade == 1 )) || return 0
+  (( has_postgres_volume == 1 )) || return 0
+
+  local target_postgres_image="postgres:18.4-alpine"
+  local target_postgres_major="18"
+  local target_pgdata_marker="${target_postgres_major}/docker/PG_VERSION"
+  local legacy_major=""
+
+  if volume_path_exists "$postgres_volume_name" "$target_pgdata_marker"; then
+    return 0
+  fi
+
+  legacy_major="$(legacy_postgres_volume_major_version "$postgres_volume_name")"
+  if [[ -z "$legacy_major" ]]; then
+    return 0
+  fi
+  if (( legacy_major >= target_postgres_major )); then
+    return 0
+  fi
+
+  local pg_user
+  pg_user="$(trim_whitespace "$(read_env_value "POSTGRES_USER")")"
+  pg_user="${pg_user:-sekant}"
+
+  local source_postgres_image="postgres:${legacy_major}-alpine"
+  if ! ensure_image_available "$source_postgres_image"; then
+    echo -e "${CYAN}${BOLD}Error:${RESET} Could not pull the source PostgreSQL image ${source_postgres_image} required for automatic migration." >&2
+    return 1
+  fi
+  if ! ensure_image_available "$target_postgres_image"; then
+    echo -e "${CYAN}${BOLD}Error:${RESET} Could not pull the target PostgreSQL image ${target_postgres_image} required for automatic migration." >&2
+    return 1
+  fi
+
+  local backup_volume_name=""
+  local timestamp=""
+  timestamp="$(date +%Y%m%d%H%M%S 2>/dev/null || printf '%s' "$SECONDS")"
+  backup_volume_name="${postgres_volume_name}_pre_pg${target_postgres_major}_${timestamp}"
+
+  local old_container_name="sekant-postgres-upgrade-old"
+  local -a dump_pairs=()
+  local dump_file=""
+  local database_name=""
+  local old_admin_user=""
+  local new_admin_user=""
+
+  echo -e "${CYAN}${BOLD}Upgrade:${RESET} Detected legacy PostgreSQL ${legacy_major} data layout. Migrating automatically to PostgreSQL ${target_postgres_major}..."
+  echo "Creating a safety snapshot of the current PostgreSQL volume: ${backup_volume_name}"
+
+  docker volume create "$backup_volume_name" >/dev/null
+  if ! copy_docker_volume_contents "$postgres_volume_name" "$backup_volume_name"; then
+    echo -e "${CYAN}${BOLD}Error:${RESET} Failed to snapshot the current PostgreSQL volume before migration." >&2
+    return 1
+  fi
+
+  remove_container_if_exists "$old_container_name"
+  set +e
+  docker run -d --rm --name "$old_container_name" -v "${postgres_volume_name}:/var/lib/postgresql/data" "$source_postgres_image" >/dev/null
+  local old_container_status=$?
+  set -e
+  if (( old_container_status != 0 )); then
+    echo -e "${CYAN}${BOLD}Error:${RESET} Failed to start a temporary PostgreSQL ${legacy_major} container for migration." >&2
+    echo "Your original data snapshot is preserved in Docker volume: ${backup_volume_name}" >&2
+    return 1
+  fi
+
+  old_admin_user="$(detect_postgres_admin_user "$old_container_name" "$pg_user" || true)"
+  if [[ -z "$old_admin_user" ]]; then
+    remove_container_if_exists "$old_container_name"
+    echo -e "${CYAN}${BOLD}Error:${RESET} Could not connect to the legacy PostgreSQL cluster to export data." >&2
+    echo "Your original data snapshot is preserved in Docker volume: ${backup_volume_name}" >&2
+    return 1
+  fi
+
+  for database_name in sekant keycloak; do
+    local db_exists=""
+    db_exists="$(postgres_query_with_retry "$old_container_name" "$old_admin_user" "postgres" "SELECT 1 FROM pg_database WHERE datname='${database_name}';" 60 | tr -d '\r' | head -n 1 | xargs || true)"
+    if [[ "$db_exists" != "1" ]]; then
+      continue
+    fi
+
+    dump_file="$(mktemp)"
+    if ! dump_postgres_database_with_retry "$old_container_name" "$old_admin_user" "$database_name" "$dump_file"; then
+      remove_container_if_exists "$old_container_name"
+      rm -f "$dump_file" 2>/dev/null || true
+      echo -e "${CYAN}${BOLD}Error:${RESET} Failed to export PostgreSQL database '${database_name}' during upgrade." >&2
+      echo "Your original data snapshot is preserved in Docker volume: ${backup_volume_name}" >&2
+      return 1
+    fi
+    dump_pairs+=("${database_name}:${dump_file}")
+  done
+
+  remove_container_if_exists "$old_container_name"
+
+  if ! docker volume rm "$postgres_volume_name" >/dev/null 2>&1; then
+    echo -e "${CYAN}${BOLD}Error:${RESET} Could not replace the legacy PostgreSQL volume with a clean PostgreSQL ${target_postgres_major} volume." >&2
+    echo "Your original data snapshot is preserved in Docker volume: ${backup_volume_name}" >&2
+    return 1
+  fi
+  docker volume create "$postgres_volume_name" >/dev/null
+
+  run_compose up -d init-secrets postgres
+  if ! wait_for_container_ready "sekant-postgres" 240; then
+    echo -e "${CYAN}${BOLD}Error:${RESET} PostgreSQL ${target_postgres_major} did not become ready during the automatic migration." >&2
+    echo "Your original data snapshot is preserved in Docker volume: ${backup_volume_name}" >&2
+    return 1
+  fi
+  if ! ensure_postgres_bootstrap; then
+    echo -e "${CYAN}${BOLD}Error:${RESET} PostgreSQL bootstrap did not complete during the automatic migration." >&2
+    echo "Your original data snapshot is preserved in Docker volume: ${backup_volume_name}" >&2
+    return 1
+  fi
+
+  new_admin_user="$(detect_postgres_admin_user "sekant-postgres" "$pg_user" || true)"
+  if [[ -z "$new_admin_user" ]]; then
+    echo -e "${CYAN}${BOLD}Error:${RESET} Could not connect to the new PostgreSQL ${target_postgres_major} cluster to restore data." >&2
+    echo "Your original data snapshot is preserved in Docker volume: ${backup_volume_name}" >&2
+    return 1
+  fi
+
+  local pair_name=""
+  for pair_name in "${dump_pairs[@]+"${dump_pairs[@]}"}"; do
+    database_name="${pair_name%%:*}"
+    dump_file="${pair_name#*:}"
+    if ! restore_postgres_database_dump_with_retry "sekant-postgres" "$new_admin_user" "$database_name" "$dump_file"; then
+      rm -f "$dump_file" 2>/dev/null || true
+      echo -e "${CYAN}${BOLD}Error:${RESET} Failed to restore PostgreSQL database '${database_name}' during the automatic migration." >&2
+      echo "Your original data snapshot is preserved in Docker volume: ${backup_volume_name}" >&2
+      return 1
+    fi
+    rm -f "$dump_file" 2>/dev/null || true
+  done
+
+  echo -e "${GREEN}${BOLD}Upgrade:${RESET} PostgreSQL data migrated automatically to the new PostgreSQL ${target_postgres_major} layout."
+  echo "Rollback snapshot retained in Docker volume: ${backup_volume_name}"
+  return 0
+}
+
 print_temp_admin_credentials=0
 if (( has_secrets_volume == 0 )); then
   print_temp_admin_credentials=1
@@ -3243,6 +3475,10 @@ init_secrets_check_image="$init_secrets_image"
 if ! docker run --rm "${init_secrets_check_image}" sh -c "grep -q \"Caddyfile prepared successfully\" /usr/local/bin/init-secrets.sh"; then
   echo -e "${CYAN}${BOLD}Error:${RESET} init-secrets image is missing the required upgrade logic." >&2
   echo "Update SEKANT_IMAGE_REPO / SEKANT_IMAGE_TAG (or SEKANT_INIT_SECRETS_IMAGE*) to a newer image, then re-run ${script_display_name}." >&2
+  exit 1
+fi
+
+if ! migrate_legacy_postgres_volume_for_pg18_upgrade; then
   exit 1
 fi
 
