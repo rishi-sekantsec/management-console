@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.7.0"
+SEKANT_DASHBOARD_VERSION="1.7.1"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -3283,7 +3283,7 @@ write_env_value "KEYCLOAK_URL" "http://keycloak:8080"
 write_env_value "KEYCLOAK_ADMIN" "$seed_admin_username"
 write_env_value "KEYCLOAK_ADMIN_EMAIL" "$seed_admin_email"
 remove_env_value "SEED_ADMIN_PASSWORD"
-write_env_value "KEYCLOAK_HOSTNAME" "$public_hostname"
+write_env_value "KEYCLOAK_HOSTNAME" "$public_url"
 write_env_value "CLICKHOUSE_RETENTION_DAYS" "$clickhouse_retention_days"
 
 has_existing_runtime=0
