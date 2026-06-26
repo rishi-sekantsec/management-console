@@ -30,15 +30,21 @@ CREATE TABLE IF NOT EXISTS sekant.security_events
     browser_extension_version            Nullable(String)                 DEFAULT NULL,
     browser_vulnerability_count          Nullable(UInt32)                 DEFAULT NULL,
     browser_vulnerability_checked_utc_ms Nullable(Int64)                  DEFAULT NULL,
+    browser_profile_email                Nullable(String)                 DEFAULT NULL,
+    browser_profile_id                   Nullable(String)                 DEFAULT NULL,
+    browser_local_ip                     Nullable(String)                 DEFAULT NULL,
+    browser_ext_configuration_id         LowCardinality(Nullable(String)) DEFAULT NULL,
 
     -- ── Event context ────────────────────────────────────────────────────────
     ctx_reputation          LowCardinality(Nullable(String)) DEFAULT NULL,
     ctx_organization        Nullable(String)       DEFAULT NULL,
     ctx_is_new_domain       Nullable(Bool)         DEFAULT NULL,
     ctx_url_context         LowCardinality(Nullable(String)) DEFAULT NULL,
+    ctx_url_tags            Array(LowCardinality(String)) DEFAULT [],
     ctx_ip                  Nullable(String)       DEFAULT NULL,
     ctx_referrer            Nullable(String)       DEFAULT NULL,
     ctx_referred_by_search  Nullable(Bool) DEFAULT NULL,
+    ctx_referrer_chain      Array(String)          DEFAULT [],
     ctx_considered_ai_site  Nullable(Bool) DEFAULT NULL,
     ctx_considered_hosting_site Nullable(Bool) DEFAULT NULL,
     ctx_unfamiliar_domain       Nullable(Bool) DEFAULT NULL,
@@ -139,6 +145,69 @@ CREATE TABLE IF NOT EXISTS sekant.security_events
 ENGINE = MergeTree()
 PARTITION BY toMonday(event_utc_ms)
 ORDER BY (event_utc_ms, event_type, browser_uuid)
+SETTINGS index_granularity = 8192;
+
+CREATE TABLE IF NOT EXISTS sekant.extension_inventory
+(
+    schema                               UInt8,
+    event_utc_ms                         DateTime64(3, 'UTC'),
+    browser_uuid                         String,
+    event_uuid                           UUID,
+    event_type                           LowCardinality(String),
+    snapshot_uuid                        UUID,
+    browser_name                         LowCardinality(Nullable(String)) DEFAULT NULL,
+    browser_version                      Nullable(String)                 DEFAULT NULL,
+    browser_os                           LowCardinality(Nullable(String)) DEFAULT NULL,
+    browser_os_version                   Nullable(String)                 DEFAULT NULL,
+    browser_extension_version            Nullable(String)                 DEFAULT NULL,
+    browser_vulnerability_count          Nullable(UInt32)                 DEFAULT NULL,
+    browser_vulnerability_checked_utc_ms Nullable(Int64)                  DEFAULT NULL,
+    browser_profile_email                Nullable(String)                 DEFAULT NULL,
+    browser_profile_id                   Nullable(String)                 DEFAULT NULL,
+    browser_local_ip                     Nullable(String)                 DEFAULT NULL,
+    browser_ext_configuration_id         LowCardinality(Nullable(String)) DEFAULT NULL,
+    extension_id                         String,
+    name                                 LowCardinality(String),
+    short_name                           LowCardinality(String),
+    description                          Nullable(String),
+    version                              Nullable(String),
+    version_name                         Nullable(String),
+    enabled                              Bool,
+    may_disable                          Bool,
+    offline_enabled                      Bool,
+    type                                 LowCardinality(String),
+    install_type                         LowCardinality(String),
+    homepage_url                         Nullable(String),
+    options_url                          Nullable(String),
+    update_url                           Nullable(String),
+    permissions                          Array(LowCardinality(String)),
+    host_permissions                     Array(String),
+    can_access_all_sites Bool MATERIALIZED (
+        has(host_permissions, '<all_urls>')
+        OR has(host_permissions, '*://*/*')
+        OR (
+            has(host_permissions, 'https://*/*')
+            AND has(host_permissions, 'http://*/*')
+        )
+    ),
+    can_inject_content Bool MATERIALIZED (
+        has(permissions, 'scripting')
+    ),
+    can_access_privileged_paths Bool MATERIALIZED (
+        has(permissions, 'management')
+        OR has(permissions, 'nativeMessaging')
+    ),
+    can_access_sensitive_data Bool MATERIALIZED (
+        has(permissions, 'history')
+        OR has(permissions, 'cookies')
+        OR has(permissions, 'identity')
+    ),
+    _ingest_time_utc_ms                  DateTime64(3, 'UTC') DEFAULT now64(),
+    INDEX idx_snapshot_uuid snapshot_uuid TYPE bloom_filter(0.01) GRANULARITY 1
+)
+ENGINE = MergeTree()
+PARTITION BY toMonday(event_utc_ms)
+ORDER BY (event_utc_ms, browser_uuid, extension_id)
 SETTINGS index_granularity = 8192;
 
 CREATE TABLE IF NOT EXISTS sekant.rules_hit (

@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.7.6"
+SEKANT_DASHBOARD_VERSION="1.8.0"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -392,6 +392,7 @@ clickhouse/storage.local.xml
 clickhouse/storage.remote.xml
 clickhouse/config.d/storage.xml
 postgres/init.sql
+postgres/reconcile-password-entrypoint.sh
 certs/generate-public-cert.sh
 README.md
 EOF
@@ -515,10 +516,11 @@ apply_update_from_github() {
     downloaded_version="$(normalize_version "$tag")"
   fi
 
-  local manifest_text raw_line source_path dest_path url tmp dest_dir dest
+  local manifest_text raw_line source_path dest_path url tmp dest_dir dest stage_dir staged
   local manifest_sources=()
   local manifest_dests=()
   local manifest_retained_dests=()
+  local staged_files=()
   if ! manifest_text="$(fetch_distribution_manifest "$tag" "$prefix")"; then
     manifest_text="$(default_distribution_manifest)"
   fi
@@ -591,17 +593,30 @@ apply_update_from_github() {
     fi
   fi
 
+  stage_dir="$(mktemp -d)"
+  if [[ -z "$stage_dir" || ! -d "$stage_dir" ]]; then
+    echo -e "${CYAN}${BOLD}Error:${RESET} Failed to prepare upgrade staging directory." >&2
+    return 1
+  fi
+
   local i
   for (( i=0; i<${#manifest_sources[@]}; i++ )); do
     source_path="${manifest_sources[$i]}"
     dest_path="${manifest_dests[$i]}"
     url="https://raw.githubusercontent.com/${github_owner}/${github_repo}/${tag}/${prefix}${source_path}"
-    tmp="$(mktemp)"
-    if ! http_get_to_file "$url" "$tmp" >/dev/null 2>&1; then
-      rm -f "$tmp" >/dev/null 2>&1 || true
+    staged="${stage_dir}/file-${i}"
+    if ! http_get_to_file "$url" "$staged" >/dev/null 2>&1; then
+      rm -rf "$stage_dir" >/dev/null 2>&1 || true
       echo -e "${CYAN}${BOLD}Error:${RESET} Failed to download ${source_path} from ${url}" >&2
       return 1
     fi
+    staged_files+=("$staged")
+  done
+
+  for (( i=0; i<${#manifest_sources[@]}; i++ )); do
+    source_path="${manifest_sources[$i]}"
+    dest_path="${manifest_dests[$i]}"
+    tmp="${staged_files[$i]}"
     if [[ "$dest_path" == "${script_display_name}" ]]; then
       dest="${root_dir}/${new_script_name}"
     else
@@ -613,7 +628,7 @@ apply_update_from_github() {
       if cp "$tmp" "$dest" >/dev/null 2>&1; then
         rm -f "$tmp" >/dev/null 2>&1 || true
       else
-        rm -f "$tmp" >/dev/null 2>&1 || true
+        rm -rf "$stage_dir" >/dev/null 2>&1 || true
         echo -e "${CYAN}${BOLD}Error:${RESET} Failed to write ${dest}" >&2
         return 1
       fi
@@ -623,6 +638,8 @@ apply_update_from_github() {
       prepare_downloaded_distribution_script "$dest" "$downloaded_version"
     fi
   done
+
+  rm -rf "$stage_dir" >/dev/null 2>&1 || true
 
   prune_removed_distribution_files "${manifest_retained_dests[@]}"
   save_managed_distribution_files "${manifest_retained_dests[@]}"
@@ -701,6 +718,7 @@ CREATE TABLE IF NOT EXISTS custom_roles (
   write_content_ids UUID[] DEFAULT ARRAY[]::UUID[],
   ch_role_name VARCHAR(100) REFERENCES ch_roles(name),
   sql_lab_access BOOLEAN DEFAULT FALSE,
+  extension_inventory_access BOOLEAN DEFAULT FALSE,
   admin_access BOOLEAN NOT NULL DEFAULT FALSE,
   content_access VARCHAR(10) NOT NULL DEFAULT 'gamma' CHECK (content_access IN ('gamma', 'alpha', 'admin')),
   content_management BOOLEAN NOT NULL DEFAULT FALSE,
@@ -761,11 +779,11 @@ CREATE TABLE IF NOT EXISTS user_ch_credentials (
   last_synced_at TIMESTAMPTZ
 );
 
-INSERT INTO custom_roles (name, description, sql_lab_access, admin_access, content_access, content_management, default_dashboard_row_limit, created_by)
+INSERT INTO custom_roles (name, description, sql_lab_access, extension_inventory_access, admin_access, content_access, content_management, default_dashboard_row_limit, created_by)
 VALUES
-  ('admin', 'Default admin role', TRUE, TRUE, 'admin', TRUE, 10000, 'system'),
-  ('supervisor', 'Default supervisor role', TRUE, FALSE, 'alpha', TRUE, 10000, 'system'),
-  ('analyst', 'Default analyst role', FALSE, FALSE, 'gamma', FALSE, 10000, 'system')
+  ('admin', 'Default admin role', TRUE, TRUE, TRUE, 'admin', TRUE, 10000, 'system'),
+  ('supervisor', 'Default supervisor role', TRUE, TRUE, FALSE, 'alpha', TRUE, 10000, 'system'),
+  ('analyst', 'Default analyst role', FALSE, FALSE, FALSE, 'gamma', FALSE, 10000, 'system')
 ON CONFLICT (name) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS content_items (
@@ -3174,7 +3192,6 @@ if (( upgrade == 1 )) && [[ -n "${SEKANT_DASHBOARD_VERSION:-}" ]]; then
 fi
 
 seed_admin_username="admin"
-seed_admin_email=""
 dashboard_https_port_default="443"
 clickhouse_retention_days_default="730"
 dashboard_https_port="$dashboard_https_port_default"
@@ -3194,7 +3211,6 @@ if [[ -z "$configured_hostname_default" && -z "$existing_cert_file" ]]; then
 fi
 configured_dashboard_https_port_default="$(trim_whitespace "$(read_env_value "DASHBOARD_HTTPS_PORT")")"
 configured_dashboard_https_port_default="${configured_dashboard_https_port_default:-$dashboard_https_port_default}"
-configured_seed_admin_email_default="$(trim_whitespace "$(read_env_value "KEYCLOAK_ADMIN_EMAIL")")"
 configured_clickhouse_mode_default="$(trim_whitespace "$(read_env_value "CLICKHOUSE_SETUP_MODE")")"
 configured_clickhouse_mode_default="${configured_clickhouse_mode_default:-local}"
 configured_clickhouse_retention_days_default="$(trim_whitespace "$(read_env_value "CLICKHOUSE_RETENTION_DAYS")")"
@@ -3202,8 +3218,8 @@ configured_clickhouse_retention_days_default="${configured_clickhouse_retention_
 
 can_reuse_env=0
 if (( force_reconfigure == 0 )); then
-  seed_admin_email_probe="$(trim_whitespace "$(read_env_value "KEYCLOAK_ADMIN_EMAIL")")"
-  if [[ -n "$seed_admin_email_probe" ]]; then
+  public_hostname_probe="$(read_configured_hostname)"
+  if [[ -n "$public_hostname_probe" ]]; then
     can_reuse_env=1
   fi
 fi
@@ -3221,13 +3237,6 @@ if (( force_reconfigure == 0 && can_reuse_env == 1 )); then
   fi
   clickhouse_mode="$(read_env_value "CLICKHOUSE_SETUP_MODE")"
   clickhouse_mode="${clickhouse_mode:-local}"
-  seed_admin_email="$(read_env_value "KEYCLOAK_ADMIN_EMAIL")"
-  seed_admin_email="$(trim_whitespace "$seed_admin_email")"
-  if [[ -z "$seed_admin_email" ]]; then
-    echo -e "${CYAN}${BOLD}Error:${RESET} KEYCLOAK_ADMIN_EMAIL is required but missing in .env." >&2
-    echo "Run with --reconfigure to set the seeded admin email." >&2
-    exit 1
-  fi
   dashboard_https_port="$(read_env_value "DASHBOARD_HTTPS_PORT")"
   dashboard_https_port="${dashboard_https_port:-$dashboard_https_port_default}"
   clickhouse_retention_days="$(read_env_value "CLICKHOUSE_RETENTION_DAYS")"
@@ -3252,15 +3261,6 @@ else
     public_hostname="$(normalize_hostname "$(prompt_with_default_text "Domain / Hostname for Management Console (default: ${configured_hostname_default}) : " "$configured_hostname_default")")"
   fi
   dashboard_https_port="$(prompt_port_with_default_text "Dashboard HTTPS host port (default: ${configured_dashboard_https_port_default}) : " "$configured_dashboard_https_port_default")"
-
-  echo ""
-  echo -e "${CYAN}${BOLD}Admin Credentials${RESET}"
-  echo -e "Admin Username : ${seed_admin_username}"
-  if [[ -n "$configured_seed_admin_email_default" ]]; then
-    seed_admin_email="$(prompt_email_with_default_required "Admin Email :" "$configured_seed_admin_email_default")"
-  else
-    seed_admin_email="$(prompt_email_required "Admin Email : ")"
-  fi
 
   echo ""
   echo -e "${CYAN}${BOLD}Database${RESET}"
@@ -3291,7 +3291,6 @@ write_env_value "PUBLIC_URL" "$public_url"
 write_env_value "KEYCLOAK_URL" "http://keycloak:8080"
 
 write_env_value "KEYCLOAK_ADMIN" "$seed_admin_username"
-write_env_value "KEYCLOAK_ADMIN_EMAIL" "$seed_admin_email"
 remove_env_value "SEED_ADMIN_PASSWORD"
 write_env_value "KEYCLOAK_HOSTNAME" "$public_url"
 write_env_value "CLICKHOUSE_RETENTION_DAYS" "$clickhouse_retention_days"

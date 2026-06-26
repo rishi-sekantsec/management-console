@@ -8,7 +8,6 @@ volumes:
   caddy_data:
   clickhouse_data:
   postgres_data:
-    external: true
     name: sekant_postgres_data
   sekant_secrets:
 
@@ -195,6 +194,9 @@ services:
       - |
         export KC_DB_PASSWORD="$$(cat /opt/keycloak/data/import/postgres_password)"
         export KEYCLOAK_ADMIN_PASSWORD="$$(cat /opt/keycloak/data/import/keycloak_admin_password)"
+        recovery_suffix="$$(printf '%s' "$$KEYCLOAK_ADMIN_PASSWORD" | sha256sum | cut -c1-12)"
+        export KEYCLOAK_RECOVERY_CLIENT_ID="$${KEYCLOAK_RECOVERY_CLIENT_ID:-sekant-recovery-admin-$$recovery_suffix}"
+        export KEYCLOAK_RECOVERY_CLIENT_SECRET="$$KEYCLOAK_ADMIN_PASSWORD"
         export PUBLIC_URL="$${PUBLIC_URL:-https://localhost}"
         export PUBLIC_URL="$$(printf '%s' "$$PUBLIC_URL" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$$//' | sed -E 's/^`//; s/`$$//; s/^"//; s/"$$//; s/^'"'"'//; s/'"'"'$$//' | sed -E 's/,+$$//')"
         if printf '%s' "$$PUBLIC_URL" | grep -Eiq '^[Hh][Tt][Tt][Pp][Ss]:?/*'; then
@@ -220,6 +222,17 @@ services:
           keycloak_hostname="$$public_scheme://$$keycloak_hostname"
         fi
         keycloak_hostname="$${keycloak_hostname%/}"
+        bootstrap_output="$$(/opt/keycloak/bin/kc.sh bootstrap-admin service --client-id "$$KEYCLOAK_RECOVERY_CLIENT_ID" --client-secret:env KEYCLOAK_RECOVERY_CLIENT_SECRET --no-prompt 2>&1)" || bootstrap_status="$$?"
+        if [ -n "$${bootstrap_output:-}" ]; then
+          printf '%s\n' "$$bootstrap_output"
+        fi
+        if [ -n "$${bootstrap_status:-}" ]; then
+          if printf '%s' "$$bootstrap_output" | grep -Eiq 'duplicate key value|already exists'; then
+            echo "Recovery admin service $$KEYCLOAK_RECOVERY_CLIENT_ID already exists; continuing startup."
+          else
+            exit "$$bootstrap_status"
+          fi
+        fi
         exec /opt/keycloak/bin/kc.sh start --http-enabled=true --import-realm --proxy-headers=xforwarded --hostname="$$keycloak_hostname" --hostname-strict=true
     expose:
       - "8080"
@@ -287,6 +300,9 @@ services:
     image: postgres:18.4-alpine
     container_name: sekant-postgres
     restart: unless-stopped
+    entrypoint:
+      - /bin/sh
+      - /usr/local/bin/sekant-postgres-entrypoint.sh
     environment:
       POSTGRES_DB: sekant
       POSTGRES_USER: ${POSTGRES_USER:-sekant}
@@ -296,9 +312,10 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql
       - ./postgres:/docker-entrypoint-initdb.d:ro
+      - ./postgres/reconcile-password-entrypoint.sh:/usr/local/bin/sekant-postgres-entrypoint.sh:ro
       - sekant_secrets:/run/secrets:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sekant}"]
+      test: ["CMD-SHELL", "PGPASSWORD=\"$$(cat /run/secrets/postgres_password 2>/dev/null)\" psql -h 127.0.0.1 -U ${POSTGRES_USER:-sekant} -d ${POSTGRES_DB:-sekant} -Atqc 'SELECT 1' >/dev/null"]
       interval: 5s
       timeout: 5s
       retries: 20

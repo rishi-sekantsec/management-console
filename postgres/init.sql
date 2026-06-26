@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS custom_roles (
   write_content_ids UUID[] DEFAULT ARRAY[]::UUID[],
   ch_role_name VARCHAR(100) REFERENCES ch_roles(name),
   sql_lab_access BOOLEAN DEFAULT FALSE,
+  extension_inventory_access BOOLEAN DEFAULT FALSE,
   admin_access BOOLEAN NOT NULL DEFAULT FALSE,
   content_access VARCHAR(10) NOT NULL DEFAULT 'gamma' CHECK (content_access IN ('gamma', 'alpha', 'admin')),
   content_management BOOLEAN NOT NULL DEFAULT FALSE,
@@ -94,11 +95,11 @@ CREATE TABLE IF NOT EXISTS user_ch_credentials (
   last_synced_at TIMESTAMPTZ
 );
 
-INSERT INTO custom_roles (name, description, sql_lab_access, admin_access, content_access, content_management, default_dashboard_row_limit, created_by)
+INSERT INTO custom_roles (name, description, sql_lab_access, extension_inventory_access, admin_access, content_access, content_management, default_dashboard_row_limit, created_by)
 VALUES
-  ('admin', 'Default admin role', TRUE, TRUE, 'admin', TRUE, 10000, 'system'),
-  ('supervisor', 'Default supervisor role', TRUE, FALSE, 'alpha', TRUE, 10000, 'system'),
-  ('analyst', 'Default analyst role', FALSE, FALSE, 'gamma', FALSE, 10000, 'system')
+  ('admin', 'Default admin role', TRUE, TRUE, TRUE, 'admin', TRUE, 10000, 'system'),
+  ('supervisor', 'Default supervisor role', TRUE, TRUE, FALSE, 'alpha', TRUE, 10000, 'system'),
+  ('analyst', 'Default analyst role', FALSE, FALSE, FALSE, 'gamma', FALSE, 10000, 'system')
 ON CONFLICT (name) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS content_items (

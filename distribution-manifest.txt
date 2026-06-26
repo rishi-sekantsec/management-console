@@ -10,5 +10,6 @@ clickhouse/storage.local.xml
 clickhouse/storage.remote.xml
 clickhouse/config.d/storage.xml
 postgres/init.sql
+postgres/reconcile-password-entrypoint.sh
 certs/generate-public-cert.sh
 README.md
