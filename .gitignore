@@ -33,6 +33,7 @@ venv/
 # Docker / local runtime artifacts
 .docker-compose.platform.yml
 caddy_data/
+.dbg/
 *.pid
 .docker-buildx-auth/
 .docker-auth/

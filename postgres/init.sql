@@ -174,6 +174,20 @@ CREATE TABLE IF NOT EXISTS system_settings (
   updated_by VARCHAR(255)
 );
 
+CREATE TABLE IF NOT EXISTS extension_store_metadata (
+  store_key VARCHAR(32) NOT NULL,
+  extension_id VARCHAR(255) NOT NULL,
+  extension_name TEXT DEFAULT '',
+  store_url TEXT DEFAULT '',
+  icon_url TEXT DEFAULT '',
+  metadata_source_url TEXT DEFAULT '',
+  fetch_status VARCHAR(20) NOT NULL DEFAULT 'missing',
+  last_error TEXT DEFAULT '',
+  fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (store_key, extension_id)
+);
+
 INSERT INTO system_settings (key, value, updated_by)
 VALUES ('default_security_dashboard_cache_ttl_seconds', '300', 'system')
 ON CONFLICT (key) DO UPDATE
