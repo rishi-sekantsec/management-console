@@ -12,7 +12,7 @@ clickhouse/config.d/storage.xml
 postgres/init.sql
 postgres/reconcile-password-entrypoint.sh
 certs/generate-public-cert.sh
-bootstrap/install-prereqs.sh
-bootstrap/install-prereqs.ps1
-bootstrap/install-prereqs.cmd
+prerequisites/install.sh
+prerequisites/install.ps1
+prerequisites/install.cmd
 README.md
