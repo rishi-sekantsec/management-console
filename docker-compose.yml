@@ -8,7 +8,6 @@ volumes:
   caddy_data:
   clickhouse_data:
   postgres_data:
-    external: true
     name: sekant_postgres_data
   sekant_secrets:
 

@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.8.4"
+SEKANT_DASHBOARD_VERSION="1.8.5"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -3152,12 +3152,12 @@ migrate_legacy_postgres_volume_for_pg18_upgrade() {
   return 0
 }
 
-ensure_runtime_external_postgres_volume() {
+ensure_runtime_postgres_volume() {
   if docker volume inspect "$postgres_volume_name" >/dev/null 2>&1; then
     return 0
   fi
   if ! docker volume create "$postgres_volume_name" >/dev/null; then
-    echo -e "${CYAN}${BOLD}Error:${RESET} Could not create the required Docker volume ${postgres_volume_name}." >&2
+    echo -e "${CYAN}${BOLD}Error:${RESET} Could not create the required PostgreSQL Docker volume ${postgres_volume_name}." >&2
     return 1
   fi
 }
@@ -3189,6 +3189,10 @@ if (( upgrade == 1 )) && [[ -n "${SEKANT_DASHBOARD_VERSION:-}" ]]; then
   if [[ -n "$installed_version_normalized" && "$installed_version_normalized" != "$current_dashboard_version_normalized" ]]; then
     pending_runtime_upgrade=1
   fi
+fi
+if (( has_postgres_volume == 1 )) && [[ -n "${SEKANT_DASHBOARD_VERSION:-}" ]]; then
+  echo -e "${CYAN}${BOLD}PostgreSQL volume compatibility:${RESET} reusing existing Docker volume ${postgres_volume_name} in place."
+  echo "No PostgreSQL data is deleted during a normal upgrade. After moving to this version, avoid running 'docker compose down -v' unless you intentionally want to erase PostgreSQL data." >&2
 fi
 
 seed_admin_username="admin"
@@ -3491,7 +3495,7 @@ if ! migrate_legacy_postgres_volume_for_pg18_upgrade; then
   exit 1
 fi
 
-if ! ensure_runtime_external_postgres_volume; then
+if ! ensure_runtime_postgres_volume; then
   exit 1
 fi
 
