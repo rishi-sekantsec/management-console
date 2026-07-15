@@ -262,6 +262,7 @@ services:
     volumes:
       - clickhouse_data:/var/lib/clickhouse
       - ./clickhouse/config.xml:/etc/clickhouse-server/config.d/config.xml:ro
+      - ./clickhouse/config.d/disable-system-logs.xml:/etc/clickhouse-server/config.d/disable-system-logs.xml:ro
       - ./clickhouse/config.d/storage.xml:/etc/clickhouse-server/config.d/storage.xml:ro
       - ${CLICKHOUSE_INIT_SQL:-./clickhouse/init.sql}:/tmp/init.sql.src:ro
       - sekant_secrets:/run/secrets:ro
@@ -283,6 +284,17 @@ services:
         if [ -n "$$CLICKHOUSE_STORAGE_POLICY" ]; then
           sed -i "s/SETTINGS /SETTINGS storage_policy = '$$CLICKHOUSE_STORAGE_POLICY', /g" /docker-entrypoint-initdb.d/init.sql
         fi
+        # On upgrades, remove persisted data/metadata for disabled internal log tables
+        # so they do not consume disk after the new config disables them.
+        for log_table in metric_log asynchronous_metric_log trace_log part_log; do
+          find /var/lib/clickhouse/store -type f -name "$$log_table.sql" -print | while read -r metadata_file; do
+            uuid="$$(sed -n "s/.*UUID '\([^']*\)'.*/\1/p" "$$metadata_file" | head -n 1)"
+            rm -f "$$metadata_file"
+            if [ -n "$$uuid" ]; then
+              rm -rf "/var/lib/clickhouse/store/$${uuid%%-*}/$$uuid"
+            fi
+          done
+        done
         exec /entrypoint.sh
     healthcheck:
       test: ["CMD-SHELL", "clickhouse-client -q 'SELECT 1' > /dev/null 2>&1"]
@@ -311,7 +323,9 @@ services:
       - "5432"
     volumes:
       - postgres_data:/var/lib/postgresql
-      - ./postgres:/docker-entrypoint-initdb.d:ro
+      # Mount only the actual init SQL so the custom entrypoint wrapper
+      # is not auto-executed a second time by Postgres initdb.
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
       - ./postgres/reconcile-password-entrypoint.sh:/usr/local/bin/sekant-postgres-entrypoint.sh:ro
       - sekant_secrets:/run/secrets:ro
     healthcheck:
@@ -368,6 +382,7 @@ services:
     depends_on:
       init-secrets:
         condition: service_healthy
+        restart: true
       clickhouse:
         condition: service_healthy
     volumes:

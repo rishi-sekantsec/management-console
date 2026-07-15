@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.8.7"
+SEKANT_DASHBOARD_VERSION="1.9.0"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -3560,10 +3560,10 @@ if (( compose_status != 0 )); then
         load_distribution_images || true
       fi
       if (( quiet == 0 )); then
-        echo "Secrets volume does not contain Caddyfile. Recreating init-secrets (preserving volumes)..." >&2
+        echo "Secrets volume does not contain Caddyfile. Recreating init-secrets and fluent-bit to refresh secret-rendered configs..." >&2
       fi
       set +e
-      run_compose up -d --force-recreate init-secrets
+      run_compose up -d --force-recreate init-secrets fluent-bit
       set -e
     fi
 

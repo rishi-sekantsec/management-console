@@ -34,6 +34,9 @@ CREATE TABLE IF NOT EXISTS sekant.security_events
     browser_profile_id                   Nullable(String)                 DEFAULT NULL,
     browser_local_ip                     Nullable(String)                 DEFAULT NULL,
     browser_ext_configuration_id         LowCardinality(Nullable(String)) DEFAULT NULL,
+    browser_computer_name                Nullable(String)                 DEFAULT NULL,
+    browser_computer_mac_address         Nullable(String)                 DEFAULT NULL,
+    browser_computer_serial_number       Nullable(String)                 DEFAULT NULL,
 
     -- ── Event context ────────────────────────────────────────────────────────
     ctx_reputation          LowCardinality(Nullable(String)) DEFAULT NULL,
@@ -105,6 +108,7 @@ CREATE TABLE IF NOT EXISTS sekant.security_events
     encryption_key_id       Nullable(String)       DEFAULT NULL,
     encryption_ephemeral_public_key Nullable(String) DEFAULT NULL,
     encryption_iv           Nullable(String)       DEFAULT NULL,
+    has_encrypted_fields    Bool                  DEFAULT notEmpty(encryption_fields),
 
     -- ── v2: User gesture ─────────────────────────────────────────────────────
     user_gesture            LowCardinality(Nullable(String)) DEFAULT NULL,
@@ -166,6 +170,9 @@ CREATE TABLE IF NOT EXISTS sekant.extension_inventory
     browser_profile_id                   Nullable(String)                 DEFAULT NULL,
     browser_local_ip                     Nullable(String)                 DEFAULT NULL,
     browser_ext_configuration_id         LowCardinality(Nullable(String)) DEFAULT NULL,
+    browser_computer_name                Nullable(String)                 DEFAULT NULL,
+    browser_computer_mac_address         Nullable(String)                 DEFAULT NULL,
+    browser_computer_serial_number       Nullable(String)                 DEFAULT NULL,
     extension_id                         String,
     name                                 LowCardinality(String),
     short_name                           LowCardinality(String),
@@ -243,4 +250,3 @@ CREATE TABLE IF NOT EXISTS sekant.audit_logs (
 ENGINE = MergeTree()
 ORDER BY (timestamp, actor_id, action)
 SETTINGS index_granularity = 8192;
-

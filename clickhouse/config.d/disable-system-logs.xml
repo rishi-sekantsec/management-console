@@ -1,0 +1,6 @@
+<clickhouse>
+  <metric_log remove="1" />
+  <asynchronous_metric_log remove="1" />
+  <trace_log remove="1" />
+  <part_log remove="1" />
+</clickhouse>
