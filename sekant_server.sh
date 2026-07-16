@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.9.1"
+SEKANT_DASHBOARD_VERSION="1.9.2"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -1042,9 +1042,6 @@ if [[ "$operation" != "uninstall" && $erase_data -eq 1 ]]; then
   exit 2
 fi
 
-if (( upgrade == 1 && verbose == 0 )); then
-  quiet=1
-fi
 if (( verbose == 1 )); then
   quiet=0
 fi
@@ -1067,7 +1064,7 @@ if [[ "$operation" == "install" ]]; then
   fi
 
   if (( update_available == 1 )); then
-    if (( quiet == 0 )); then
+    if (( quiet == 0 && upgrade == 0 )); then
       echo -e "${CYAN}${BOLD}Update available:${RESET} v${current_semver} -> v${latest_semver}"
     fi
 
@@ -1079,7 +1076,7 @@ if [[ "$operation" == "install" ]]; then
     fi
 
     if [[ "$do_upgrade" == "yes" ]]; then
-      if (( quiet == 0 )); then
+      if (( quiet == 0 && upgrade == 0 )); then
         echo -e "${CYAN}${BOLD}Updating:${RESET} Downloading distribution files for ${latest_tag}..."
       fi
       if ! apply_update_from_github "$latest_tag"; then
@@ -1147,11 +1144,6 @@ run_cmd_with_max_wait() {
       wait "$pid" 2>/dev/null || true
       return 124
     fi
-    if (( quiet == 1 )); then
-      if (( (SECONDS - start_seconds) > 0 && (SECONDS - start_seconds) % 10 == 0 )); then
-        echo -e "${DIM}...still working ($((SECONDS - start_seconds))s)${RESET}" >&2
-      fi
-    fi
     sleep 1
   done
 
@@ -1173,7 +1165,7 @@ run_compose_with_max_wait() {
 }
 
 show_upgrade_progress() {
-  (( upgrade == 1 && quiet == 1 ))
+  return 1
 }
 
 print_upgrade_progress() {
@@ -1312,9 +1304,7 @@ load_distribution_images() {
     return 0
   fi
 
-  if (( quiet == 1 )); then
-    echo -e "${CYAN}${BOLD}Fixing${RESET}" >&2
-  else
+  if (( quiet == 0 )); then
     echo "Loading Docker images..." >&2
   fi
 
@@ -1353,9 +1343,7 @@ ensure_image_available() {
   fi
 
   if [[ -f "${root_dir}/load-images.sh" ]]; then
-    if (( quiet == 1 )); then
-      echo -e "${CYAN}${BOLD}Fixing${RESET}" >&2
-    else
+    if (( quiet == 0 )); then
       echo "Loading Docker images..." >&2
     fi
     set +e
@@ -3175,9 +3163,7 @@ pending_runtime_upgrade=0
 if (( has_existing_volumes == 1 )); then
   installed_version="$(read_volume_file "$secrets_volume_name" "dashboard_version" | tr -d '\r' | head -n 1 | xargs || true)"
   installed_version_normalized="$(normalize_version "$installed_version")"
-  if [[ -n "${SEKANT_DASHBOARD_VERSION}" && -n "${installed_version}" && "${installed_version}" != "${SEKANT_DASHBOARD_VERSION}" ]]; then
-    echo -e "${CYAN}${BOLD}Upgrade detected:${RESET} v${installed_version} -> v${SEKANT_DASHBOARD_VERSION}"
-  fi
+  :
 fi
 
 if (( upgrade == 1 )) && [[ -n "${SEKANT_DASHBOARD_VERSION:-}" ]]; then
@@ -3190,7 +3176,7 @@ if (( upgrade == 1 )) && [[ -n "${SEKANT_DASHBOARD_VERSION:-}" ]]; then
     pending_runtime_upgrade=1
   fi
 fi
-if (( has_postgres_volume == 1 )) && [[ -n "${SEKANT_DASHBOARD_VERSION:-}" ]]; then
+if (( upgrade == 0 && has_postgres_volume == 1 )) && [[ -n "${SEKANT_DASHBOARD_VERSION:-}" ]]; then
   echo -e "${CYAN}${BOLD}PostgreSQL volume compatibility:${RESET} reusing existing Docker volume ${postgres_volume_name} in place."
   echo "No PostgreSQL data is deleted during a normal upgrade. After moving to this version, avoid running 'docker compose down -v' unless you intentionally want to erase PostgreSQL data." >&2
 fi
@@ -3353,7 +3339,7 @@ if (( has_existing_volumes == 0 && has_existing_runtime == 0 )); then
   assert_port_free "$dashboard_https_port" "Dashboard HTTPS"
 else
   if is_port_in_use "$dashboard_https_port"; then
-    echo -e "${CYAN}${BOLD}Notice:${RESET} Dashboard HTTPS port ${dashboard_https_port} is already in use on 127.0.0.1. This is expected during upgrades if the existing Sekant deployment is running." >&2
+    :
   fi
 fi
 
@@ -3534,9 +3520,7 @@ if (( compose_status == 0 && has_service_args == 0 )); then
 fi
 
 if (( compose_status != 0 )); then
-  if (( quiet == 1 )); then
-    echo -e "${CYAN}${BOLD}Fixing${RESET}" >&2
-  else
+  if (( quiet == 0 )); then
     echo -e "${CYAN}${BOLD}Error:${RESET} Startup failed. Collecting diagnostics..." >&2
     run_compose ps 2>/dev/null || true
   fi
@@ -3559,9 +3543,6 @@ if (( compose_status != 0 )); then
       if (( upgrade == 1 )); then
         load_distribution_images || true
       fi
-      if (( quiet == 0 )); then
-        echo "Secrets volume does not contain Caddyfile. Recreating init-secrets and fluent-bit to refresh secret-rendered configs..." >&2
-      fi
       set +e
       run_compose up -d --force-recreate init-secrets fluent-bit
       set -e
@@ -3575,9 +3556,6 @@ if (( compose_status != 0 )); then
     set -e
     if echo "$nginx_logs" | grep -q 'host not found in upstream "superset"'; then
       attempted_recovery=1
-      if (( quiet == 0 )); then
-        echo "Fixing nginx..." >&2
-      fi
       set +e
       if compose_service_has_build "nginx"; then
         run_compose build --no-cache nginx
@@ -3641,11 +3619,6 @@ if (( print_temp_admin_credentials == 1 )); then
     echo "(CHANGE THIS TEMPORARY PASSWORD AT FIRST LOGIN)"
     echo
   fi
-fi
-
-if (( upgrade == 1 && pending_runtime_upgrade == 1 )) && [[ -n "${SEKANT_DASHBOARD_VERSION:-}" ]]; then
-  echo -e "${GREEN}${BOLD}Upgraded to Version ${SEKANT_DASHBOARD_VERSION} !!!${RESET}"
-  echo
 fi
 
 if [[ -n "$upgrade_log_file" ]]; then

@@ -287,13 +287,20 @@ services:
         # On upgrades, remove persisted data/metadata for disabled internal log tables
         # so they do not consume disk after the new config disables them.
         for log_table in metric_log asynchronous_metric_log trace_log part_log; do
-          find /var/lib/clickhouse/store -type f -name "$$log_table.sql" -print | while read -r metadata_file; do
-            uuid="$$(sed -n "s/.*UUID '\([^']*\)'.*/\1/p" "$$metadata_file" | head -n 1)"
-            rm -f "$$metadata_file"
-            if [ -n "$$uuid" ]; then
-              rm -rf "/var/lib/clickhouse/store/$${uuid%%-*}/$$uuid"
+          uuid=""
+          for metadata_file in "/var/lib/clickhouse/metadata/system/$$log_table.sql" "/var/lib/clickhouse/metadata_dropped/system/$$log_table.sql"; do
+            if [ -f "$$metadata_file" ]; then
+              current_uuid="$$(sed -n "s/.*UUID '\([^']*\)'.*/\1/p" "$$metadata_file" | head -n 1)"
+              if [ -n "$$current_uuid" ]; then
+                uuid="$$current_uuid"
+              fi
+              rm -f "$$metadata_file"
             fi
           done
+          rm -rf "/var/lib/clickhouse/data/system/$$log_table"
+          if [ -n "$$uuid" ]; then
+            rm -rf "/var/lib/clickhouse/store/$${uuid%%-*}/$$uuid"
+          fi
         done
         exec /entrypoint.sh
     healthcheck:
