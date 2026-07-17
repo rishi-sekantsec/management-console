@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.9.4"
+SEKANT_DASHBOARD_VERSION="1.9.5"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -2473,6 +2473,7 @@ select_clickhouse_mode() {
 
 configure_local_clickhouse() {
   mkdir -p "$storage_dir"
+  ensure_clickhouse_disable_system_logs_file
   cp "${root_dir}/clickhouse/storage.local.xml" "${storage_dir}/storage.xml"
   write_env_value "CLICKHOUSE_SETUP_MODE" "local"
   write_env_value "CLICKHOUSE_STORAGE_POLICY" ""
@@ -2507,6 +2508,7 @@ configure_remote_clickhouse() {
   s3_endpoint="${s3_endpoint%/}/"
 
   mkdir -p "$storage_dir"
+  ensure_clickhouse_disable_system_logs_file
   cp "${root_dir}/clickhouse/storage.remote.xml" "${storage_dir}/storage.xml"
   write_env_value "CLICKHOUSE_SETUP_MODE" "remote"
   write_env_value "CLICKHOUSE_STORAGE_POLICY" "s3"
@@ -2514,6 +2516,28 @@ configure_remote_clickhouse() {
   write_env_value "CLICKHOUSE_S3_ACCESS_KEY_ID" "$access_key"
   write_env_value "CLICKHOUSE_S3_SECRET_ACCESS_KEY" "$secret_key"
   write_env_value "CLICKHOUSE_S3_REGION" "$region"
+}
+
+ensure_clickhouse_disable_system_logs_file() {
+  local file_path="${storage_dir}/disable-system-logs.xml"
+
+  mkdir -p "$storage_dir"
+
+  if [[ -e "$file_path" && ! -f "$file_path" ]]; then
+    rm -rf "$file_path" >/dev/null 2>&1 || {
+      echo -e "${CYAN}${BOLD}Error:${RESET} ${file_path} exists but could not be replaced with the required ClickHouse config file." >&2
+      return 1
+    }
+  fi
+
+  cat > "$file_path" <<'EOF'
+<clickhouse>
+  <metric_log remove="1" />
+  <asynchronous_metric_log remove="1" />
+  <trace_log remove="1" />
+  <part_log remove="1" />
+</clickhouse>
+EOF
 }
 
 configure_remote_clickhouse_from_env() {
