@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.9.3"
+SEKANT_DASHBOARD_VERSION="1.9.4"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -390,6 +390,7 @@ clickhouse/init.sql
 clickhouse/init.remote.sql
 clickhouse/storage.local.xml
 clickhouse/storage.remote.xml
+clickhouse/config.d/disable-system-logs.xml
 clickhouse/config.d/storage.xml
 postgres/init.sql
 postgres/reconcile-password-entrypoint.sh
@@ -545,10 +546,6 @@ apply_update_from_github() {
 
     manifest_retained_dests+=("$dest_path")
 
-    if should_preserve_clickhouse_on_upgrade && [[ "$dest_path" == clickhouse/* ]]; then
-      continue
-    fi
-
     manifest_sources+=("$source_path")
     manifest_dests+=("$dest_path")
   done <<< "$manifest_text"
@@ -578,10 +575,6 @@ apply_update_from_github() {
       fi
 
       manifest_retained_dests+=("$dest_path")
-
-      if should_preserve_clickhouse_on_upgrade && [[ "$dest_path" == clickhouse/* ]]; then
-        continue
-      fi
 
       manifest_sources+=("$source_path")
       manifest_dests+=("$dest_path")
@@ -1529,6 +1522,63 @@ clickhouse_exec_sql() {
     return 1
   fi
   docker exec -i "sekant-clickhouse" clickhouse-client --user "$ch_user" --password "$ch_password" -q "$sql"
+}
+
+ensure_clickhouse_disabled_system_logs() {
+  if ! docker container inspect "sekant-clickhouse" >/dev/null 2>&1; then
+    echo -e "${CYAN}${BOLD}Error:${RESET} ClickHouse container not found; cannot enforce disabled system logs." >&2
+    return 1
+  fi
+
+  local config_path="/etc/clickhouse-server/config.d/disable-system-logs.xml"
+  if ! docker exec "sekant-clickhouse" test -f "$config_path" >/dev/null 2>&1; then
+    echo -e "${CYAN}${BOLD}Error:${RESET} ClickHouse disable-system-logs config is missing inside the container." >&2
+    echo "Expected file: ${config_path}" >&2
+    return 1
+  fi
+
+  local config_checks=(
+    '<metric_log remove="1"'
+    '<asynchronous_metric_log remove="1"'
+    '<trace_log remove="1"'
+    '<part_log remove="1"'
+  )
+  local pattern
+  for pattern in "${config_checks[@]}"; do
+    if ! docker exec "sekant-clickhouse" sh -c "grep -q '$pattern' '$config_path'" >/dev/null 2>&1; then
+      echo -e "${CYAN}${BOLD}Error:${RESET} ClickHouse disable-system-logs config is present but incomplete." >&2
+      echo "Missing pattern: ${pattern}" >&2
+      return 1
+    fi
+  done
+
+  if ! clickhouse_exec_sql "SYSTEM RELOAD CONFIG" >/dev/null 2>&1; then
+    echo -e "${CYAN}${BOLD}Error:${RESET} Failed to reload ClickHouse config before enforcing disabled system logs." >&2
+    return 1
+  fi
+
+  local -a log_tables=(
+    "metric_log"
+    "asynchronous_metric_log"
+    "trace_log"
+    "part_log"
+  )
+  local log_table
+  for log_table in "${log_tables[@]}"; do
+    clickhouse_exec_sql "TRUNCATE TABLE IF EXISTS system.${log_table}" >/dev/null 2>&1 || true
+    clickhouse_exec_sql "DROP TABLE IF EXISTS system.${log_table} SYNC" >/dev/null 2>&1 || true
+  done
+
+  local remaining
+  remaining="$(clickhouse_exec_sql "SELECT groupArray(name) FROM system.tables WHERE database = 'system' AND name IN ('metric_log', 'asynchronous_metric_log', 'trace_log', 'part_log')" | tr -d '\r' | head -n 1 || true)"
+  remaining="$(trim_whitespace "$remaining")"
+  if [[ -n "$remaining" && "$remaining" != "[]" ]]; then
+    echo -e "${CYAN}${BOLD}Error:${RESET} ClickHouse still reports disabled system log tables after enforcement." >&2
+    echo "Remaining tables: ${remaining}" >&2
+    return 1
+  fi
+
+  return 0
 }
 
 ensure_clickhouse_retention_ttl() {
@@ -3542,7 +3592,9 @@ if (( compose_status == 0 && has_service_args == 0 )); then
   if (( wait_status != 0 )); then
     compose_status=1
   else
-    if ! ensure_clickhouse_retention_ttl; then
+    if ! ensure_clickhouse_disabled_system_logs; then
+      compose_status=1
+    elif ! ensure_clickhouse_retention_ttl; then
       compose_status=1
     fi
   fi
