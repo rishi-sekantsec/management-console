@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.9.2"
+SEKANT_DASHBOARD_VERSION="1.9.3"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -1153,6 +1153,9 @@ run_cmd_with_max_wait() {
 compose_override_file=""
 compose_file_args=("-f" "${root_dir}/docker-compose.yml")
 platform_override_file="${root_dir}/.docker-compose.platform.yml"
+postgres_volume_override_file=""
+
+trap 'rm -f "${postgres_volume_override_file}" 2>/dev/null || true' EXIT
 
 run_compose() {
   run_cmd "${compose_cmd[@]}" "${compose_file_args[@]}" "$@"
@@ -1876,6 +1879,7 @@ remove_container_if_exists() {
 upgrade_recreate_service_names() {
   local -a services=(
     "init-secrets"
+    "clickhouse"
     "postgres"
     "keycloak"
     "redis"
@@ -2809,6 +2813,37 @@ fi
 
 existing_compose_project="sekant"
 
+append_postgres_volume_external_override() {
+  local compose_project="${1:-sekant}"
+  local volume_name="${2:-sekant_postgres_data}"
+  local volume_project_label=""
+  local volume_compose_name_label=""
+
+  if ! docker volume inspect "$volume_name" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  volume_project_label="$(docker volume inspect -f '{{ index .Labels "com.docker.compose.project" }}' "$volume_name" 2>/dev/null || true)"
+  volume_compose_name_label="$(docker volume inspect -f '{{ index .Labels "com.docker.compose.volume" }}' "$volume_name" 2>/dev/null || true)"
+  if [[ "$volume_project_label" == "$compose_project" && "$volume_compose_name_label" == "postgres_data" ]]; then
+    return 0
+  fi
+
+  if ! postgres_volume_override_file="$(mktemp)"; then
+    return 0
+  fi
+
+  cat > "${postgres_volume_override_file}" <<EOF
+volumes:
+  postgres_data:
+    external: true
+    name: ${volume_name}
+EOF
+  compose_file_args+=("-f" "${postgres_volume_override_file}")
+}
+
+append_postgres_volume_external_override "$existing_compose_project" "sekant_postgres_data"
+
 secrets_volume_name="${existing_compose_project}_sekant_secrets"
 clickhouse_volume_name="${existing_compose_project}_clickhouse_data"
 postgres_volume_name="${existing_compose_project}_postgres_data"
@@ -3375,9 +3410,7 @@ if [[ "$operation" == "install" ]] && (( upgrade == 1 || has_existing_runtime ==
     remove_container_if_exists "sekant-keycloak"
     remove_container_if_exists "sekant-redis"
     remove_container_if_exists "sekant-sql-validator"
-    if (( preserve_clickhouse_runtime == 0 )); then
-      remove_container_if_exists "sekant-clickhouse"
-    fi
+    remove_container_if_exists "sekant-clickhouse"
     remove_container_if_exists "sekant-postgres"
     remove_container_if_exists "sekant-fluent-bit"
     remove_container_if_exists "sekant-init-secrets"
