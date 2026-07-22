@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.9.5"
+SEKANT_DASHBOARD_VERSION="1.9.6"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -2532,10 +2532,42 @@ ensure_clickhouse_disable_system_logs_file() {
 
   cat > "$file_path" <<'EOF'
 <clickhouse>
+  <!-- Your existing logs... -->
   <metric_log remove="1" />
   <asynchronous_metric_log remove="1" />
   <trace_log remove="1" />
   <part_log remove="1" />
+  <text_log remove="1" />
+  <background_schedule_pool_log remove="1" />
+  <query_thread_log remove="1" />
+  <processors_profile_log remove="1" />
+  <filesystem_cache_log remove="1" />
+  
+  <query_log replace="1">
+    <ttl>event_time + INTERVAL 14 DAY DELETE</ttl>
+  </query_log>
+  <error_log replace="1">
+    <ttl>event_time + INTERVAL 14 DAY DELETE</ttl>
+  </error_log>
+  <!-- Do not disable this else it can cause issues -->
+  <zookeeper_log replace="1">
+    <ttl>event_time + INTERVAL 14 DAY DELETE</ttl>
+  </zookeeper_log>
+  <session_log replace="1">
+    <ttl>event_time + INTERVAL 14 DAY DELETE</ttl>
+  </session_log>
+  <query_views_log replace="1">
+    <ttl>event_time + INTERVAL 14 DAY DELETE</ttl>
+  </query_views_log>
+  <blob_storage_log replace="1">
+    <ttl>event_time + INTERVAL 14 DAY DELETE</ttl>
+  </blob_storage_log>
+
+  <!-- Use remove="1" if you don't use these features -->
+  <opentelemetry_log remove="1" />
+  <asynchronous_insert_log remove="1" />
+  <transaction_log remove="1" />
+  <crash_log remove="1" />
 </clickhouse>
 EOF
 }
