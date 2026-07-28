@@ -435,7 +435,7 @@ services:
         wget --quiet --spider http://frontend:3000/health
         wget --quiet --spider http://backend:4000/health
         wget --quiet --spider http://nginx/health
-        wget --quiet --spider --no-check-certificate --header='Host: localhost' https://caddy/health
+        wget --quiet --spider --header='Host: localhost' http://caddy/health
         echo ready >/tmp/status
         echo 'Sekant Platform is READY!'
         tail -f /dev/null

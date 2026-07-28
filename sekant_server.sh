@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.9.6"
+SEKANT_DASHBOARD_VERSION="1.10.0"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -86,6 +86,14 @@ upgrade=0
 verbose=0
 quiet=0
 erase_data=0
+dev_mode=0
+# Detect dev mode from .env (for upgrades of existing dev installs)
+if [[ -f "${env_file}" ]]; then
+  _env_dev_branch="$(grep -E '^SEKANT_DEV_BRANCH=' "${env_file}" 2>/dev/null | head -n1 | cut -d= -f2- | tr -d ' \t\r\n' || true)"
+  dev_mode="${SEKANT_DEV_BRANCH:-${_env_dev_branch:-0}}"
+else
+  dev_mode="${SEKANT_DEV_BRANCH:-0}"
+fi
 upgrade_log_file=""
 compose_up_args=()
 operation="install"
@@ -235,6 +243,9 @@ tag_semver() {
 }
 
 github_latest_release_tag() {
+  if (( dev_mode == 1 )); then
+    return 1
+  fi
   local api_url tmp tag
   api_url="https://api.github.com/repos/${github_owner}/${github_repo}/releases/latest"
   tmp="$(mktemp)"
@@ -273,6 +284,12 @@ github_highest_semver_tag() {
 
     while IFS= read -r body_tag; do
       [[ -z "$body_tag" ]] && continue
+      # Filter by dev mode: dev mode only accepts dev-prefixed tags; main mode skips dev-prefixed tags
+      if (( dev_mode == 1 )); then
+        [[ "$body_tag" =~ ^dev[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
+      else
+        [[ "$body_tag" =~ ^dev ]] && continue
+      fi
       local semver
       semver="$(tag_semver "$body_tag")"
       [[ -z "$semver" ]] && continue
@@ -308,6 +325,12 @@ github_highest_semver_tag_via_git() {
   while IFS= read -r line; do
     ref="${line##*$'\t'}"
     tag="${ref#refs/tags/}"
+    # Filter by dev mode: dev mode only accepts dev-prefixed tags; main mode skips dev-prefixed tags
+    if (( dev_mode == 1 )); then
+      [[ "$tag" =~ ^dev[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
+    else
+      [[ "$tag" =~ ^dev ]] && continue
+    fi
     semver="$(tag_semver "$tag")"
     [[ -z "$semver" ]] && continue
     if [[ -z "$best_semver" ]] || semver_gt "$semver" "$best_semver"; then
@@ -1005,6 +1028,9 @@ for arg in "$@"; do
       ;;
     --upgrade|--ugrade)
       upgrade=1
+      ;;
+    --dev)
+      dev_mode=1
       ;;
     --verbose)
       verbose=1
@@ -3425,6 +3451,11 @@ write_env_value "KEYCLOAK_ADMIN" "$seed_admin_username"
 remove_env_value "SEED_ADMIN_PASSWORD"
 write_env_value "KEYCLOAK_HOSTNAME" "$public_url"
 write_env_value "CLICKHOUSE_RETENTION_DAYS" "$clickhouse_retention_days"
+if (( dev_mode == 1 )); then
+  write_env_value "SEKANT_DEV_BRANCH" "1"
+else
+  write_env_value "SEKANT_DEV_BRANCH" "0"
+fi
 
 has_existing_runtime=0
 if has_running_sekant_deployment; then
