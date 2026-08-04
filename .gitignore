@@ -51,6 +51,8 @@ data/exports/
 Thumbs.db
 .idea/
 .vscode/settings.json
+.trae/
+.trae-auth-token
 
 # Local test artifacts (keep sample scripts in repo if needed)
 cookies.txt

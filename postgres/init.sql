@@ -38,6 +38,8 @@ CREATE TABLE IF NOT EXISTS custom_roles (
   admin_access BOOLEAN NOT NULL DEFAULT FALSE,
   content_access VARCHAR(10) NOT NULL DEFAULT 'gamma' CHECK (content_access IN ('gamma', 'alpha', 'admin')),
   content_management BOOLEAN NOT NULL DEFAULT FALSE,
+  export_api_access BOOLEAN NOT NULL DEFAULT FALSE,
+  sensitive_data_decryption BOOLEAN NOT NULL DEFAULT FALSE,
   default_dashboard_row_limit INTEGER NOT NULL DEFAULT 10000 CHECK (default_dashboard_row_limit BETWEEN 100 AND 10000),
   created_by VARCHAR(255),
   created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -95,11 +97,17 @@ CREATE TABLE IF NOT EXISTS user_ch_credentials (
   last_synced_at TIMESTAMPTZ
 );
 
-INSERT INTO custom_roles (name, description, sql_lab_access, extension_inventory_access, admin_access, content_access, content_management, default_dashboard_row_limit, created_by)
+INSERT INTO ch_roles (name, description, policy_type, column_grants, created_by)
 VALUES
-  ('admin', 'Default admin role', TRUE, TRUE, TRUE, 'admin', TRUE, 10000, 'system'),
-  ('supervisor', 'Default supervisor role', TRUE, TRUE, FALSE, 'alpha', TRUE, 10000, 'system'),
-  ('analyst', 'Default analyst role', FALSE, FALSE, FALSE, 'gamma', FALSE, 10000, 'system')
+  ('__role_supervisor', 'Managed policy for role supervisor', 'permissive', '["schema","event_utc_ms","browser_uuid","event_uuid","event_type","tab_url","tab_id","hostname","frame_url","event_source","session_id","metadata","browser_name","browser_version","browser_os","browser_os_version","browser_extension_version","browser_vulnerability_count","browser_vulnerability_checked_utc_ms","browser_profile_email","browser_profile_id","browser_local_ip","browser_ext_configuration_id","browser_computer_name","browser_computer_mac_address","browser_computer_serial_number","ctx_reputation","ctx_organization","ctx_is_new_domain","ctx_url_context","ctx_url_tags","ctx_ip","ctx_referrer","ctx_referred_by_search","ctx_referrer_chain","ctx_considered_ai_site","ctx_considered_hosting_site","ctx_unfamiliar_domain","ctx_page_title","risk_type","risk_level","risk_rationale","risk_context","verdicts","action","secondary_url","intercept_matches","intercept_context","files","content_snippet","content_length","user_gesture","user_gesture_utc_ms","indicators","threats","script_attribution","_ingest_time_utc_ms"]'::jsonb, 'system'),
+  ('__role_analyst', 'Managed policy for role analyst', 'permissive', '["schema","event_utc_ms","browser_uuid","event_uuid","event_type","tab_url","tab_id","hostname","frame_url","event_source","session_id","metadata","browser_name","browser_version","browser_os","browser_os_version","browser_extension_version","browser_vulnerability_count","browser_vulnerability_checked_utc_ms","browser_profile_email","browser_profile_id","browser_local_ip","browser_ext_configuration_id","browser_computer_name","browser_computer_mac_address","browser_computer_serial_number","ctx_reputation","ctx_organization","ctx_is_new_domain","ctx_url_context","ctx_url_tags","ctx_ip","ctx_referrer","ctx_referred_by_search","ctx_referrer_chain","ctx_considered_ai_site","ctx_considered_hosting_site","ctx_unfamiliar_domain","ctx_page_title","risk_type","risk_level","risk_rationale","risk_context","verdicts","action","secondary_url","intercept_matches","intercept_context","files","content_snippet","content_length","user_gesture","user_gesture_utc_ms","indicators","threats","script_attribution","_ingest_time_utc_ms"]'::jsonb, 'system')
+ON CONFLICT (name) DO NOTHING;
+
+INSERT INTO custom_roles (name, description, sql_lab_access, extension_inventory_access, admin_access, content_access, content_management, export_api_access, sensitive_data_decryption, ch_role_name, default_dashboard_row_limit, created_by)
+VALUES
+  ('admin', 'Default admin role', TRUE, TRUE, TRUE, 'admin', TRUE, TRUE, TRUE, NULL, 10000, 'system'),
+  ('supervisor', 'Default supervisor role', TRUE, TRUE, FALSE, 'alpha', TRUE, FALSE, FALSE, '__role_supervisor', 10000, 'system'),
+  ('analyst', 'Default analyst role', FALSE, FALSE, FALSE, 'gamma', FALSE, FALSE, FALSE, '__role_analyst', 10000, 'system')
 ON CONFLICT (name) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS content_items (
