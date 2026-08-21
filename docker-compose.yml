@@ -32,6 +32,7 @@ services:
       OKTA_OIDC_ISSUER: ${OKTA_OIDC_ISSUER:-}
       OKTA_OAUTH_CLIENT_ID: ${OKTA_OAUTH_CLIENT_ID:-}
       OKTA_OAUTH_CLIENT_SECRET: ${OKTA_OAUTH_CLIENT_SECRET:-}
+      SEKANT_ENABLE_TRIAL: ${SEKANT_ENABLE_TRIAL:-0}
     volumes:
       - sekant_secrets:/run/secrets
       - ./certs:/certs:ro
@@ -148,6 +149,7 @@ services:
       OKTA_OIDC_ISSUER: ${OKTA_OIDC_ISSUER:-}
       OKTA_OAUTH_CLIENT_ID: ${OKTA_OAUTH_CLIENT_ID:-}
       OKTA_OAUTH_CLIENT_SECRET: ${OKTA_OAUTH_CLIENT_SECRET:-}
+      SEKANT_ENABLE_TRIAL: ${SEKANT_ENABLE_TRIAL:-0}
     expose:
       - "4000"
     depends_on:

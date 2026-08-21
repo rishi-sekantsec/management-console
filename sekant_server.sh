@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.10.1"
+SEKANT_DASHBOARD_VERSION="1.10.2"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -1014,6 +1014,8 @@ set_operation() {
   operation_explicit=1
 }
 
+enable_trial=0
+
 for arg in "$@"; do
   case "$arg" in
     --install)
@@ -1039,6 +1041,9 @@ for arg in "$@"; do
       ;;
     --dev)
       dev_mode=1
+      ;;
+    --enable-trial)
+      enable_trial=1
       ;;
     --verbose)
       verbose=1
@@ -3458,7 +3463,17 @@ write_env_value "KEYCLOAK_URL" "http://keycloak:8080"
 write_env_value "KEYCLOAK_ADMIN" "$seed_admin_username"
 remove_env_value "SEED_ADMIN_PASSWORD"
 write_env_value "KEYCLOAK_HOSTNAME" "$public_url"
+if (( enable_trial == 1 )) && [[ -z "$(read_env_value "CLICKHOUSE_RETENTION_DAYS")" ]]; then
+  clickhouse_retention_days=30
+fi
 write_env_value "CLICKHOUSE_RETENTION_DAYS" "$clickhouse_retention_days"
+
+if (( enable_trial == 1 )); then
+  write_env_value "SEKANT_ENABLE_TRIAL" "1"
+elif [[ -z "$(read_env_value "SEKANT_ENABLE_TRIAL")" ]]; then
+  write_env_value "SEKANT_ENABLE_TRIAL" "0"
+fi
+
 if (( dev_mode == 1 )); then
   write_env_value "SEKANT_DEV_BRANCH" "1"
 else
