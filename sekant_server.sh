@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.10.3"
+SEKANT_DASHBOARD_VERSION="1.10.4"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -3185,7 +3185,7 @@ migrate_legacy_postgres_volume_for_pg18_upgrade() {
   (( upgrade == 1 )) || return 0
   (( has_postgres_volume == 1 )) || return 0
 
-  local target_postgres_image="postgres:18.4-alpine"
+  local target_postgres_image="postgres:18.6-alpine"
   local target_postgres_major="18"
   local target_pgdata_marker="${target_postgres_major}/docker/PG_VERSION"
   local legacy_major=""
