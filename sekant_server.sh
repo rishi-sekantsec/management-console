@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.10.5"
+SEKANT_DASHBOARD_VERSION="1.10.6"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -256,6 +256,9 @@ github_latest_release_tag() {
   tag="$(grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"[^"]+"' "$tmp" | head -n 1 | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')"
   rm -f "$tmp" >/dev/null 2>&1 || true
   if [[ -z "$tag" ]]; then
+    return 1
+  fi
+  if [[ "$tag" =~ ^dev ]]; then
     return 1
   fi
   github_candidate_tag="$tag"
