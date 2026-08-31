@@ -1,4 +1,5 @@
 # Files that exist in the published build repo and should be managed by upgrades.
+.gitattributes
 .gitignore
 distribution-manifest.txt
 sekant_server.sh

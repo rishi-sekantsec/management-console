@@ -1,0 +1,70 @@
+# Line ending normalization for the Sekant distribution.
+# Ensures shell scripts are always served as LF, regardless of the
+# customer's host platform or local git core.autocrlf setting.
+
+# Default: normalize all text files to LF on commit and checkout.
+* text=auto eol=lf
+
+# Shell / Linux entrypoint scripts must stay LF.
+*.sh    text eol=lf
+*.bash  text eol=lf
+*.zsh   text eol=lf
+postgres/*.sh          text eol=lf
+certs/*.sh             text eol=lf
+prerequisites/*.sh     text eol=lf
+scripts/*.sh           text eol=lf
+
+# Windows-native scripts keep CRLF (cmd.exe / PowerShell depend on it).
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+
+# Text source/config files.
+*.md       text diff=markdown
+*.txt      text
+*.rst      text
+*.json     text
+*.yml      text
+*.yaml     text
+*.toml     text
+*.ini      text
+*.cfg      text
+*.conf     text
+*.env      text
+*.sql      text
+*.xml      text
+*.ts       text eol=lf
+*.tsx      text eol=lf
+*.js       text eol=lf
+*.mjs      text eol=lf
+*.cjs      text eol=lf
+*.css      text eol=lf
+*.scss     text eol=lf
+*.html     text eol=lf
+*.py       text eol=lf
+Dockerfile      text eol=lf
+.dockerignore   text eol=lf
+Makefile        text eol=lf
+.gitignore      text eol=lf
+.gitattributes  text eol=lf
+
+# Binary assets: never reinterpret bytes.
+*.png    binary
+*.jpg    binary
+*.jpeg   binary
+*.gif    binary
+*.ico    binary
+*.webp   binary
+*.woff   binary
+*.woff2  binary
+*.ttf    binary
+*.otf    binary
+*.eot    binary
+*.pdf    binary
+*.zip    binary
+*.tar    binary
+*.gz     binary
+*.tgz    binary
+*.bz2    binary
+*.xz     binary
+*.7z     binary
