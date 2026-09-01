@@ -9,6 +9,13 @@ CREATE TABLE IF NOT EXISTS sekant.security_events
     event_uuid              UUID,
     event_type              LowCardinality(String),
 
+    -- ── Multi-tenant support ─────────────────────────────────────────────────
+    -- tenant_id is a string tenant key; defaults to 'default' for single-org
+    -- deployments. tenant_bucket is derived by ClickHouse at insert time and
+    -- must never appear in the JSON wire format (MATERIALIZED).
+    tenant_id               LowCardinality(String)           DEFAULT 'default',
+    tenant_bucket           UInt16                           MATERIALIZED cityHash64(tenant_id) % 128,
+
     -- ── Basic info ───────────────────────────────────────────────────────────
     tab_url                 Nullable(String)                 DEFAULT NULL,
     tab_id                  Int32                            DEFAULT -1,
@@ -146,7 +153,9 @@ CREATE TABLE IF NOT EXISTS sekant.security_events
     -- `user_request_*` are populated from the unified event's `user_request` object
     -- when the extension raises an IT approval request.
     -- `user_request_response_*` are NOT part of the unified event; they are written by
-    -- the management console from a separate ITResponse payload (event_type = 'it_response')
+    -- the management console from a response payload (a replay of the request event
+    -- with the response fields appended; the event_type stays the same, and the row
+    -- is recognized as a response by the presence of these fields)
     -- and correlate back to the request via user_request_id.
     user_request_id                           Nullable(UUID)   DEFAULT NULL,
     user_request_action                       LowCardinality(Nullable(String)) DEFAULT NULL,
@@ -159,18 +168,14 @@ CREATE TABLE IF NOT EXISTS sekant.security_events
     user_request_response_note                Nullable(String) DEFAULT NULL,
 
     -- ── Ingestion metadata ───────────────────────────────────────────────────
-    -- Tenant sharding: _tenant_id is optionally passed through from fluent-bit (never
-    -- emitted by the extension). _partition_id is computed by ClickHouse at insert time
-    -- as _tenant_id % 128 and must never appear in the JSON wire format (MATERIALIZED).
-    _tenant_id              Nullable(Int64) DEFAULT NULL,
-    _partition_id           Nullable(Int64) MATERIALIZED (_tenant_id % 128),
     _ingest_time_utc_ms     DateTime64(3, 'UTC') DEFAULT now64(),
     INDEX idx_event_uuid event_uuid TYPE bloom_filter(0.01) GRANULARITY 1,
     INDEX idx_user_request_id user_request_id TYPE bloom_filter(0.01) GRANULARITY 1
 )
 ENGINE = MergeTree()
-PARTITION BY toMonday(event_utc_ms)
-ORDER BY (event_utc_ms, event_type, browser_uuid)
+PARTITION BY (toYYYYMM(event_utc_ms), tenant_bucket)
+ORDER BY (tenant_id, event_utc_ms)
+TTL toDateTime(event_utc_ms, 'UTC') + INTERVAL 90 DAY DELETE
 SETTINGS index_granularity = 8192;
 
 CREATE TABLE IF NOT EXISTS sekant.extension_inventory

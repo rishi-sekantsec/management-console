@@ -150,6 +150,7 @@ services:
       OKTA_OAUTH_CLIENT_ID: ${OKTA_OAUTH_CLIENT_ID:-}
       OKTA_OAUTH_CLIENT_SECRET: ${OKTA_OAUTH_CLIENT_SECRET:-}
       SEKANT_ENABLE_TRIAL: ${SEKANT_ENABLE_TRIAL:-0}
+      FLUENT_BIT_INGEST_URL: http://fluent-bit:${FLUENT_BIT_INPUT_PORT:-31415}
     expose:
       - "4000"
     depends_on:
