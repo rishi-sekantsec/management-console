@@ -198,18 +198,6 @@ CREATE TABLE IF NOT EXISTS extension_store_metadata (
   PRIMARY KEY (store_key, extension_id)
 );
 
-CREATE TABLE IF NOT EXISTS email_verification_tokens (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  username VARCHAR(255) NOT NULL REFERENCES users(username) ON DELETE CASCADE,
-  email VARCHAR(320) NOT NULL,
-  token_hash CHAR(64) NOT NULL UNIQUE,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  expires_at TIMESTAMPTZ NOT NULL,
-  used_at TIMESTAMPTZ NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_email_verification_tokens_username ON email_verification_tokens (username);
-
 INSERT INTO system_settings (key, value, updated_by)
 VALUES ('default_security_dashboard_cache_ttl_seconds', '300', 'system')
 ON CONFLICT (key) DO UPDATE
