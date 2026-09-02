@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.10.14"
+SEKANT_DASHBOARD_VERSION="1.10.15"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -3558,7 +3558,10 @@ if [[ "$operation" == "install" ]] && (( upgrade == 1 || has_existing_runtime ==
   fi
   cd "$root_dir"
   if (( preserve_clickhouse_runtime == 1 )); then
-    mapfile -t upgrade_recreate_services < <(upgrade_recreate_service_names)
+    upgrade_recreate_services=()
+    while IFS= read -r _service_name; do
+      upgrade_recreate_services+=("$_service_name")
+    done < <(upgrade_recreate_service_names)
     compose_stop_preserving_volumes "$existing_compose_project" "${upgrade_recreate_services[@]}"
   else
     compose_down_preserving_volumes "$existing_compose_project"
@@ -3690,7 +3693,10 @@ for arg in "${compose_up_args[@]+"${compose_up_args[@]}"}"; do
 done
 compose_up_targets=("${compose_up_args[@]+"${compose_up_args[@]}"}")
 if (( upgrade == 1 && has_service_args == 0 && ${preserve_clickhouse_runtime:-0} == 1 )); then
-  mapfile -t compose_up_targets < <(upgrade_recreate_service_names)
+  compose_up_targets=()
+  while IFS= read -r _service_name; do
+    compose_up_targets+=("$_service_name")
+  done < <(upgrade_recreate_service_names)
 fi
 
 set +e
