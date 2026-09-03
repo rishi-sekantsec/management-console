@@ -9,8 +9,8 @@
 - `docker`
 - `docker compose`
 - On Linux/EC2, use at least:
-  - `>2 vCPU`
-  - `>8 GB` memory
+  - `>4 vCPU`
+  - `>16 GB` memory
   - `>512 GB` SSD storage
 - On Apple Silicon, enable Docker Desktop's `Use Rosetta for x86/amd64 emulation` for any amd64-only Sekant images.
 
@@ -26,7 +26,7 @@ cd sekant
 Run this in the empty folder you created above. The `.` at the end clones the repository into the current directory.
 
 ```bash
-git clone --branch v1.10.16 --depth 1 https://github.com/rishi-sekantsec/management-console .
+git clone --branch v1.11.0 --depth 1 https://github.com/rishi-sekantsec/management-console .
 ```
 
 ## 2) Start the Installer
