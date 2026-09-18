@@ -205,7 +205,8 @@ CREATE TABLE IF NOT EXISTS email_verification_tokens (
   token_hash CHAR(64) NOT NULL UNIQUE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   expires_at TIMESTAMPTZ NOT NULL,
-  used_at TIMESTAMPTZ NULL
+  used_at TIMESTAMPTZ NULL,
+  purpose VARCHAR(32) NOT NULL DEFAULT 'verify'
 );
 
 CREATE INDEX IF NOT EXISTS idx_email_verification_tokens_username ON email_verification_tokens (username);

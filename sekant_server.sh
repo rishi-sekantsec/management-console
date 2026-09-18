@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.11.2"
+SEKANT_DASHBOARD_VERSION="1.11.3"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -407,7 +407,9 @@ detect_repo_prefix() {
 
 default_distribution_manifest() {
   cat <<'EOF'
+.gitattributes
 .gitignore
+.env.sizing.example
 distribution-manifest.txt
 sekant_server.sh
 docker-compose.yml
@@ -418,9 +420,13 @@ clickhouse/storage.local.xml
 clickhouse/storage.remote.xml
 clickhouse/config.d/disable-system-logs.xml
 clickhouse/config.d/storage.xml
+clickhouse/config.d/limits.xml
 postgres/init.sql
 postgres/reconcile-password-entrypoint.sh
 certs/generate-public-cert.sh
+prerequisites/install.sh
+prerequisites/install.ps1
+prerequisites/install.cmd
 README.md
 EOF
 }
@@ -3018,7 +3024,7 @@ if [[ "$operation" == "uninstall" ]]; then
     echo -e "${CYAN}${BOLD}Uninstalling Sekant containers, removing .env, and erasing volumes...${RESET}"
     compose_down_preserving_volumes "$existing_compose_project"
     force_remove_sekant_containers "$existing_compose_project"
-    remove_named_volumes_if_exist "$secrets_volume_name" "$clickhouse_volume_name" "$postgres_volume_name"
+    remove_named_volumes_if_exist "$secrets_volume_name" "$clickhouse_volume_name" "$postgres_volume_name" "${existing_compose_project}_fluent_bit_buffer"
   else
     echo -e "${CYAN}${BOLD}Uninstalling Sekant containers and removing .env (preserving volumes)...${RESET}"
     compose_down_preserving_volumes "$existing_compose_project"

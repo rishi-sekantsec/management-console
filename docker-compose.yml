@@ -7,6 +7,7 @@ networks:
 volumes:
   caddy_data:
   clickhouse_data:
+  fluent_bit_buffer:
   postgres_data:
     name: sekant_postgres_data
   sekant_secrets:
@@ -16,6 +17,7 @@ services:
     image: ${SEKANT_INIT_SECRETS_IMAGE:-${SEKANT_INIT_SECRETS_IMAGE_REPO:-${SEKANT_IMAGE_REPO:-sekantsec/management-console}}:init-secrets-${SEKANT_INIT_SECRETS_IMAGE_TAG:-${SEKANT_IMAGE_TAG:-latest}}}
     container_name: sekant-init-secrets
     restart: unless-stopped
+    mem_limit: ${INIT_SECRETS_MEM_LIMIT:-0}
     environment:
       CADDY_DOMAIN: ${CADDY_DOMAIN:-localhost}
       PUBLIC_URL: ${PUBLIC_URL:-https://localhost}
@@ -38,7 +40,7 @@ services:
       - ./certs:/certs:ro
     entrypoint: ["/bin/sh", "-c", "sh /usr/local/bin/init-secrets.sh && tail -f /dev/null"]
     healthcheck:
-      test: ["CMD-SHELL", "ls /run/secrets/keycloak_admin_password && ls /run/secrets/seed_admin_temporary_password && ls /run/secrets/realm-export.json && ls /run/secrets/users.xml && ls /run/secrets/fluent-bit.conf && ls /run/secrets/security_events.lua && ls /run/secrets/Caddyfile"]
+      test: ["CMD-SHELL", "ls /run/secrets/keycloak_admin_password && ls /run/secrets/seed_admin_temporary_password && ls /run/secrets/realm-export.json && ls /run/secrets/users.xml && ls /run/secrets/fluent-bit.yaml && ls /run/secrets/security_events.lua && ls /run/secrets/Caddyfile"]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -50,6 +52,7 @@ services:
     image: caddy:2.11.4-alpine
     container_name: sekant-caddy
     restart: unless-stopped
+    mem_limit: ${CADDY_MEM_LIMIT:-0}
     dns_opt:
       - ndots:0
     environment:
@@ -81,6 +84,7 @@ services:
     image: ${SEKANT_IMAGE_REPO:-sekantsec/management-console}:nginx-${SEKANT_IMAGE_TAG:-latest}
     container_name: sekant-nginx
     restart: unless-stopped
+    mem_limit: ${NGINX_MEM_LIMIT:-0}
     depends_on:
       frontend:
         condition: service_healthy
@@ -101,6 +105,7 @@ services:
     image: ${SEKANT_IMAGE_REPO:-sekantsec/management-console}:frontend-${SEKANT_IMAGE_TAG:-latest}
     container_name: sekant-frontend
     restart: unless-stopped
+    mem_limit: ${FRONTEND_MEM_LIMIT:-0}
     expose:
       - "3000"
     healthcheck:
@@ -116,7 +121,15 @@ services:
     image: ${SEKANT_IMAGE_REPO:-sekantsec/management-console}:backend-${SEKANT_IMAGE_TAG:-latest}
     container_name: sekant-backend
     restart: unless-stopped
+    # No limit unless BACKEND_MEM_LIMIT is set in .env (see .env.sizing.example). Upgrades replace
+    # this file but keep .env, so a hard-coded default here would silently resize existing installs.
+    mem_limit: ${BACKEND_MEM_LIMIT:-0}
     environment:
+      # Optional V8 heap cap. It bounds only the JavaScript heap: response Buffers, decoded strings
+      # and socket write buffers on the dashboard path live outside it. If heap plus that off-heap
+      # memory exceeds mem_limit, the kernel kills the process silently (exit 137, no log), and the
+      # automatic restart resets docker inspect's OOMKilled flag. Leave generous headroom.
+      NODE_OPTIONS: ${BACKEND_NODE_OPTIONS:-}
       PUBLIC_URL: ${PUBLIC_URL:-https://localhost}
       DASHBOARD_HTTP_PORT: ${DASHBOARD_HTTP_PORT:-80}
       KEYCLOAK_URL: ${KEYCLOAK_URL:-http://keycloak:8080}
@@ -182,6 +195,7 @@ services:
     image: quay.io/keycloak/keycloak:26.7.2
     container_name: sekant-keycloak
     restart: unless-stopped
+    mem_limit: ${KEYCLOAK_MEM_LIMIT:-0}
     environment:
       KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
       PUBLIC_URL: ${PUBLIC_URL:-https://localhost}
@@ -260,6 +274,10 @@ services:
     image: clickhouse/clickhouse-server:26.5.1.882
     container_name: sekant-clickhouse
     restart: unless-stopped
+    # No limit unless CLICKHOUSE_MEM_LIMIT is set in .env. ClickHouse sets its memory ceiling to
+    # max_server_memory_usage_to_ram_ratio (clickhouse/config.d/limits.xml) of the smaller of this
+    # limit and host RAM, so without a limit the ratio applies to host RAM.
+    mem_limit: ${CLICKHOUSE_MEM_LIMIT:-0}
     expose:
       - "8123"
       - "9000"
@@ -268,6 +286,7 @@ services:
       - ./clickhouse/config.xml:/etc/clickhouse-server/config.d/config.xml:ro
       - ./clickhouse/config.d/disable-system-logs.xml:/etc/clickhouse-server/config.d/disable-system-logs.xml:ro
       - ./clickhouse/config.d/storage.xml:/etc/clickhouse-server/config.d/storage.xml:ro
+      - ./clickhouse/config.d/limits.xml:/etc/clickhouse-server/config.d/limits.xml:ro
       - ${CLICKHOUSE_INIT_SQL:-./clickhouse/init.sql}:/tmp/init.sql.src:ro
       - sekant_secrets:/run/secrets:ro
     environment:
@@ -323,6 +342,7 @@ services:
     image: postgres:18.6-alpine
     container_name: sekant-postgres
     restart: unless-stopped
+    mem_limit: ${POSTGRES_MEM_LIMIT:-0}
     entrypoint:
       - /bin/sh
       - /usr/local/bin/sekant-postgres-entrypoint.sh
@@ -355,7 +375,25 @@ services:
     image: redis:8.8.2-alpine
     container_name: sekant-redis
     restart: unless-stopped
-    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    mem_limit: ${REDIS_MEM_LIMIT:-0}
+    # maxmemory is a bound, not a reservation. Without it Redis defaults to noeviction and
+    # REJECTS writes once full rather than evicting, so every cache write fails at once.
+    # An evicted entry costs one re-query; an unbounded Redis costs the host.
+    # Output buffers for normal clients stay unlimited on purpose. From Redis 8.6, large replies
+    # are sent by reference, so slow readers do not copy cached values, while a hard
+    # client-output-buffer-limit counts those references and drops the backend's single connection.
+    # Do not pin an image older than 8.6 or set the policy to noeviction. When REDIS_MEM_LIMIT is
+    # set, keep it at least REDIS_MAXMEMORY x 1.05 plus the largest cached value plus 64 MiB.
+    command:
+      - "redis-server"
+      - "--save"
+      - ""
+      - "--appendonly"
+      - "no"
+      - "--maxmemory"
+      - "${REDIS_MAXMEMORY:-3584mb}"
+      - "--maxmemory-policy"
+      - "${REDIS_MAXMEMORY_POLICY:-allkeys-lru}"
     expose:
       - "6379"
     healthcheck:
@@ -371,6 +409,7 @@ services:
     image: ${SEKANT_IMAGE_REPO:-sekantsec/management-console}:sql-validator-${SEKANT_IMAGE_TAG:-latest}
     container_name: sekant-sql-validator
     restart: unless-stopped
+    mem_limit: ${SQL_VALIDATOR_MEM_LIMIT:-0}
     environment:
       ALLOWED_TABLES: ${SQLVALIDATOR_ALLOWED_TABLES:-security_events,sekant.security_events}
       MAX_LIMIT: ${SQLVALIDATOR_MAX_LIMIT:-10000}
@@ -389,7 +428,8 @@ services:
     image: fluent/fluent-bit:5.0.7
     container_name: sekant-fluent-bit
     restart: unless-stopped
-    entrypoint: ["/fluent-bit/bin/fluent-bit", "-c", "/run/secrets/fluent-bit.conf"]
+    mem_limit: ${FLUENT_BIT_MEM_LIMIT:-0}
+    entrypoint: ["/fluent-bit/bin/fluent-bit", "-c", "/run/secrets/fluent-bit.yaml"]
     depends_on:
       init-secrets:
         condition: service_healthy
@@ -398,8 +438,11 @@ services:
         condition: service_healthy
     volumes:
       - sekant_secrets:/run/secrets:ro
+      # Filesystem buffer for ingested events that are not yet in ClickHouse. It must be a volume
+      # so accepted events survive container recreation on upgrade.
+      - fluent_bit_buffer:/fluent-bit/buffer
     healthcheck:
-      test: ["CMD", "/fluent-bit/bin/fluent-bit", "--dry-run", "-c", "/run/secrets/fluent-bit.conf"]
+      test: ["CMD", "/fluent-bit/bin/fluent-bit", "--dry-run", "-c", "/run/secrets/fluent-bit.yaml"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -411,6 +454,7 @@ services:
     image: alpine:3.24.1
     container_name: sekant-readiness
     restart: unless-stopped
+    mem_limit: ${READINESS_MEM_LIMIT:-0}
     depends_on:
       caddy:
         condition: service_healthy

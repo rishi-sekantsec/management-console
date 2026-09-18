@@ -1,0 +1,45 @@
+<clickhouse>
+  <!--
+    Memory guardrails for a CO-LOCATED deployment, where ClickHouse shares a host with the
+    backend, Keycloak, Postgres and Redis.
+
+    ClickHouse's defaults assume a dedicated machine. Measured on a 7.65 GiB host they resolved to:
+      max_server_memory_usage   6.89 GiB  (90% of the host)
+      mark_cache_size           3.83 GiB
+      uncompressed_cache_size   3.83 GiB
+    The two caches alone were budgeted at more than the whole machine. Under concurrent dashboard
+    load this killed the server repeatedly.
+
+    The memory ratio is relative, not absolute. ClickHouse applies it to the smaller of host RAM
+    and the container's memory limit, so size ClickHouse with CLICKHOUSE_MEM_LIMIT in .env. Do not
+    edit this file: upgrades replace it.
+
+    With this ceiling in place and no concurrency caps, ClickHouse survived 10, 25 and 50
+    concurrent pairs of heavy dashboard and chart queries with no restarts. Queries that would
+    exceed the ceiling fail with Code 241 instead of taking the server down.
+
+    Concurrency caps (max_concurrent_queries and the per-kind select and insert caps) are
+    deliberately NOT set. ClickHouse enforces them by rejecting excess queries immediately with
+    Code 202; it does not queue them. In testing that turned dashboard loads into HTTP 500s,
+    failed logins into HTTP 500s, and ingestion inserts into retries. queue_max_wait_ms makes
+    queries wait only for the global max_concurrent_queries pool, and only for callers that pass
+    it, so admission control with queueing needs backend and Fluent Bit changes and belongs in a
+    later release.
+
+    Per-query limits (max_memory_usage, max_threads) are profile settings and cannot live here,
+    because ClickHouse loads profiles only from users.xml. The backend can pass them per query.
+  -->
+
+  <!-- Fraction of min(host RAM, container memory limit) that ClickHouse may use. -->
+  <max_server_memory_usage_to_ram_ratio>0.70</max_server_memory_usage_to_ram_ratio>
+
+  <!--
+    Caches. Defaults are auto-sized to a fraction of host RAM, which is far too generous when
+    co-located. The uncompressed cache is disabled outright because use_uncompressed_cache
+    defaults to 0, so it was reserving memory it could never use.
+  -->
+  <mark_cache_size>536870912</mark_cache_size>
+  <index_mark_cache_size>268435456</index_mark_cache_size>
+  <uncompressed_cache_size>0</uncompressed_cache_size>
+  <index_uncompressed_cache_size>0</index_uncompressed_cache_size>
+</clickhouse>

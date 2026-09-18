@@ -4,6 +4,7 @@
 !.env.example
 !.env.push.example
 !.env.dockerhub.example
+!.env.sizing.example
 .docker-no-credential-helper
 
 # Node / frontend / backend
