@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.11.3"
+SEKANT_DASHBOARD_VERSION="1.11.4"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -2421,6 +2421,168 @@ assert_port_free() {
   fi
 }
 
+# Picks a small local image to ask the Docker engine whether it can publish a port. Nothing is
+# pulled for this check, and it is skipped entirely when no suitable image is cached.
+find_dashboard_port_probe_image() {
+  local candidate
+  for candidate in "alpine:3.24.1" "alpine:latest" "busybox:latest"; do
+    if docker image inspect "$candidate" >/dev/null 2>&1; then
+      printf "%s" "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# is_port_in_use() probes the shell's own loopback, which is not always the namespace the engine
+# publishes ports on. Under WSL with Docker Desktop the shell sees the WSL VM while the engine
+# binds on Windows, so a busy host port looks free. Ask the engine to bind it the same way
+# compose will; only bind failures count, so an unrelated engine problem does not look like a
+# port conflict.
+engine_can_publish_port() {
+  local port="$1"
+  local image="$2"
+  local output=""
+
+  if [[ -z "$image" ]]; then
+    return 0
+  fi
+
+  if output="$(docker run --rm -p "${port}:80" --entrypoint /bin/true "$image" 2>&1)"; then
+    return 0
+  fi
+
+  case "$output" in
+    *"ports are not available"*|*"port is already allocated"*|*"address already in use"*|*"Only one usage of each socket address"*)
+      return 1
+      ;;
+  esac
+
+  return 0
+}
+
+dashboard_http_port_is_free() {
+  local port="$1"
+  local probe_image="${2:-}"
+
+  if is_port_in_use "$port"; then
+    return 1
+  fi
+  if ! engine_can_publish_port "$port" "$probe_image"; then
+    return 1
+  fi
+  return 0
+}
+
+# Mirrors is_private_host() in scripts/init-secrets.sh so the port choice matches the
+# Caddyfile the install will actually generate.
+is_local_dashboard_host() {
+  local host
+  host="$(printf "%s" "${1:-}" | tr '[:upper:]' '[:lower:]')"
+  if [[ -z "$host" ]]; then
+    return 1
+  fi
+  case "$host" in
+    localhost|127.0.0.1|*.local|*.internal|*.test) return 0 ;;
+  esac
+  case "$host" in
+    *.*.*.*)
+      case "$host" in
+        *[!0-9.]*) return 1 ;;
+      esac
+      return 0
+      ;;
+  esac
+  case "$host" in
+    *.*) ;;
+    *) return 0 ;;
+  esac
+  return 1
+}
+
+# Mirrors detect_custom_cert_trust_mode() in scripts/init-secrets.sh: a certificate whose
+# issuer matches its own subject is self-signed. Anything else, including an unreadable or
+# missing certificate, is treated as publicly trusted.
+cert_is_self_signed() {
+  local cert_file="$1"
+  local issuer=""
+  local subject=""
+  if [[ -z "$cert_file" || ! -f "$cert_file" ]]; then
+    return 1
+  fi
+  if ! command -v openssl >/dev/null 2>&1; then
+    return 1
+  fi
+  issuer="$(openssl x509 -in "$cert_file" -noout -issuer -nameopt RFC2253 2>/dev/null || true)"
+  subject="$(openssl x509 -in "$cert_file" -noout -subject -nameopt RFC2253 2>/dev/null || true)"
+  issuer="${issuer#issuer=}"
+  subject="${subject#subject=}"
+  if [[ -n "$issuer" && "$issuer" == "$subject" ]]; then
+    return 0
+  fi
+  return 1
+}
+
+# Reports whether Caddy is serving a publicly trusted certificate for a hostname. The probe
+# connects to the local HTTPS listener with that SNI, so it needs neither DNS resolution nor
+# hairpin routing. When issuance has not succeeded, Caddy falls back to its internal
+# certificate, which the issuer check catches.
+dashboard_public_certificate_ready() {
+  local host="$1"
+  local port="$2"
+  local handshake=""
+  local details=""
+  local issuer=""
+
+  if [[ -z "$host" ]]; then
+    return 1
+  fi
+  if ! command -v openssl >/dev/null 2>&1; then
+    # Cannot inspect the served certificate without openssl; stay quiet rather than warn.
+    return 0
+  fi
+
+  handshake="$(openssl s_client -connect "127.0.0.1:${port}" -servername "$host" </dev/null 2>/dev/null || true)"
+  if [[ -z "$handshake" ]]; then
+    return 1
+  fi
+
+  details="$(printf "%s" "$handshake" | openssl x509 -noout -issuer -ext subjectAltName 2>/dev/null || true)"
+  if [[ -z "$details" ]]; then
+    return 1
+  fi
+
+  issuer="$(printf "%s" "$details" | sed -nE 's/^issuer=//p' | head -n 1)"
+  if printf "%s" "$issuer" | grep -qi "caddy"; then
+    return 1
+  fi
+
+  if printf "%s" "$details" | grep -oE 'DNS:[^,[:space:]]+' | sed 's/^DNS://' | grep -qixF "$host"; then
+    return 0
+  fi
+
+  return 1
+}
+
+# A self-signed or internal-CA install serves ingestion and /public-json over the plain-HTTP
+# listener, so it must not compete with a public-CA deployment for port 80. Scan upward from
+# the default and fail the install instead of silently reusing a busy port.
+select_free_dashboard_http_port() {
+  local start_port="$1"
+  local span="$2"
+  local probe_image="${3:-}"
+  local candidate="$start_port"
+  local last_port=$((start_port + span - 1))
+  while (( candidate <= last_port )); do
+    if dashboard_http_port_is_free "$candidate" "$probe_image"; then
+      printf "%s" "$candidate"
+      return 0
+    fi
+    candidate=$((candidate + 1))
+  done
+  return 1
+}
+
 render_menu_option() {
   local option_label="$1"
   local is_selected="$2"
@@ -3021,10 +3183,10 @@ fi
 if [[ "$operation" == "uninstall" ]]; then
   cd "$root_dir"
   if (( erase_data == 1 )); then
-    echo -e "${CYAN}${BOLD}Uninstalling Sekant containers, removing .env, and erasing volumes...${RESET}"
+    echo -e "${CYAN}${BOLD}Uninstalling Sekant containers, removing .env, and erasing volumes (including TLS certificates)...${RESET}"
     compose_down_preserving_volumes "$existing_compose_project"
     force_remove_sekant_containers "$existing_compose_project"
-    remove_named_volumes_if_exist "$secrets_volume_name" "$clickhouse_volume_name" "$postgres_volume_name" "${existing_compose_project}_fluent_bit_buffer"
+    remove_named_volumes_if_exist "$secrets_volume_name" "$clickhouse_volume_name" "$postgres_volume_name" "${existing_compose_project}_fluent_bit_buffer" "${existing_compose_project}_caddy_data"
   else
     echo -e "${CYAN}${BOLD}Uninstalling Sekant containers and removing .env (preserving volumes)...${RESET}"
     compose_down_preserving_volumes "$existing_compose_project"
@@ -3372,8 +3534,11 @@ fi
 
 seed_admin_username="admin"
 dashboard_https_port_default="443"
+dashboard_http_port_self_signed_default="8080"
+dashboard_http_port_scan_span="100"
 clickhouse_retention_days_default="730"
 dashboard_https_port="$dashboard_https_port_default"
+dashboard_http_port=""
 clickhouse_retention_days="$clickhouse_retention_days_default"
 existing_cert_file="$(find_existing_cert_file || true)"
 existing_cert_hostname=""
@@ -3390,6 +3555,7 @@ if [[ -z "$configured_hostname_default" && -z "$existing_cert_file" ]]; then
 fi
 configured_dashboard_https_port_default="$(trim_whitespace "$(read_env_value "DASHBOARD_HTTPS_PORT")")"
 configured_dashboard_https_port_default="${configured_dashboard_https_port_default:-$dashboard_https_port_default}"
+configured_dashboard_http_port_default="$(trim_whitespace "$(read_env_value "DASHBOARD_HTTP_PORT")")"
 configured_clickhouse_mode_default="$(trim_whitespace "$(read_env_value "CLICKHOUSE_SETUP_MODE")")"
 configured_clickhouse_mode_default="${configured_clickhouse_mode_default:-local}"
 configured_clickhouse_retention_days_default="$(trim_whitespace "$(read_env_value "CLICKHOUSE_RETENTION_DAYS")")"
@@ -3418,6 +3584,7 @@ if (( force_reconfigure == 0 && can_reuse_env == 1 )); then
   clickhouse_mode="${clickhouse_mode:-local}"
   dashboard_https_port="$(read_env_value "DASHBOARD_HTTPS_PORT")"
   dashboard_https_port="${dashboard_https_port:-$dashboard_https_port_default}"
+  dashboard_http_port="$configured_dashboard_http_port_default"
   clickhouse_retention_days="$(read_env_value "CLICKHOUSE_RETENTION_DAYS")"
   clickhouse_retention_days="${clickhouse_retention_days:-$clickhouse_retention_days_default}"
 else
@@ -3440,6 +3607,9 @@ else
     public_hostname="$(normalize_hostname "$(prompt_with_default_text "Domain / Hostname for Management Console (default: ${configured_hostname_default}) : " "$configured_hostname_default")")"
   fi
   dashboard_https_port="$(prompt_port_with_default_text "Dashboard HTTPS host port (default: ${configured_dashboard_https_port_default}) : " "$configured_dashboard_https_port_default")"
+  # An existing DASHBOARD_HTTP_PORT in .env wins over the automatic pick, so the plain-HTTP
+  # port can be pinned instead of scanned.
+  dashboard_http_port="$configured_dashboard_http_port_default"
 
   echo ""
   echo -e "${CYAN}${BOLD}Database${RESET}"
@@ -3538,6 +3708,61 @@ if [[ "$operation" == "start" ]]; then
   echo -e "${CYAN}${BOLD}Notice:${RESET} No existing stopped containers found; continuing with install flow."
   operation="install"
 fi
+
+# A publicly trusted certificate keeps the plain-HTTP listener on port 80, where Caddy needs
+# it for the HTTP-01 challenge fallback and the HTTP-to-HTTPS redirect. Self-signed and
+# internal-CA installs instead serve ingestion and /public-json over that listener, so it
+# moves to the first free port from 8080 upward.
+dashboard_cert_trust_mode="public"
+if [[ -n "$existing_cert_file" ]] && cert_is_self_signed "$existing_cert_file"; then
+  dashboard_cert_trust_mode="self-signed"
+elif [[ -z "$existing_cert_file" ]] && is_local_dashboard_host "$public_hostname"; then
+  dashboard_cert_trust_mode="self-signed"
+fi
+
+if [[ "$dashboard_cert_trust_mode" == "self-signed" ]]; then
+  if (( has_existing_volumes == 1 || has_existing_runtime == 1 )) && [[ -z "$dashboard_http_port" ]]; then
+    # Earlier releases never wrote DASHBOARD_HTTP_PORT, so an install that predates this
+    # setting is already publishing port 80 and its enrolled devices point at it.
+    dashboard_http_port="80"
+    echo -e "${CYAN}${BOLD}Notice:${RESET} Keeping the plain-HTTP Dashboard port 80 for this existing install, because enrolled devices already point at it."
+    echo "Set DASHBOARD_HTTP_PORT in .env and re-run --install --reconfigure to move it."
+  elif (( has_existing_volumes == 1 || has_existing_runtime == 1 )) && [[ -n "$dashboard_http_port" ]]; then
+    : # keep the port the existing deployment already publishes
+  else
+    selected_dashboard_http_port=""
+    dashboard_port_probe_image="$(find_dashboard_port_probe_image || true)"
+    # Honour an explicitly configured port when it is free. Port 80 belongs to public-CA
+    # installs, so a self-signed install selects from the scan range instead.
+    if [[ -n "$dashboard_http_port" ]]; then
+      if [[ "$dashboard_http_port" == "80" ]]; then
+        echo -e "${CYAN}${BOLD}Notice:${RESET} Plain-HTTP port 80 stays reserved for public-CA installs; selecting the first free port from ${dashboard_http_port_self_signed_default}."
+      elif dashboard_http_port_is_free "$dashboard_http_port" "$dashboard_port_probe_image"; then
+        selected_dashboard_http_port="$dashboard_http_port"
+      else
+        echo -e "${CYAN}${BOLD}Notice:${RESET} Configured plain-HTTP port ${dashboard_http_port} is in use; selecting the first free port from ${dashboard_http_port_self_signed_default}."
+      fi
+    fi
+    if [[ -z "$selected_dashboard_http_port" ]]; then
+      selected_dashboard_http_port="$(select_free_dashboard_http_port "$dashboard_http_port_self_signed_default" "$dashboard_http_port_scan_span" "$dashboard_port_probe_image" || true)"
+    fi
+    if [[ -z "$selected_dashboard_http_port" ]]; then
+      dashboard_http_port_last_scanned=$((dashboard_http_port_self_signed_default + dashboard_http_port_scan_span - 1))
+      echo -e "${CYAN}${BOLD}Error:${RESET} No free Dashboard HTTP port between ${dashboard_http_port_self_signed_default} and ${dashboard_http_port_last_scanned}." >&2
+      echo "This install uses a self-signed certificate, so ingestion and /public-json are served over the plain-HTTP port." >&2
+      echo "Free one of those ports, or set DASHBOARD_HTTP_PORT in .env to a port that is available." >&2
+      exit 1
+    fi
+    dashboard_http_port="$selected_dashboard_http_port"
+  fi
+  echo -e "${CYAN}${BOLD}Dashboard HTTP port (self-signed, plain HTTP):${RESET} ${dashboard_http_port}"
+else
+  dashboard_http_port="80"
+  if (( has_existing_volumes == 0 && has_existing_runtime == 0 )); then
+    assert_port_free "$dashboard_http_port" "Dashboard HTTP"
+  fi
+fi
+write_env_value "DASHBOARD_HTTP_PORT" "$dashboard_http_port"
 
 if (( has_existing_volumes == 0 && has_existing_runtime == 0 )); then
   assert_port_free "$dashboard_https_port" "Dashboard HTTPS"
@@ -3820,6 +4045,35 @@ fi
 echo
 echo -e "${CYAN}${BOLD}Dashboard URL:${RESET} ${public_url}"
 echo
+
+# Public issuance happens in the background, so report it instead of letting the install claim
+# success while the configured hostname still has no certificate. Skipped for custom
+# certificate pairs, which never depend on a certificate authority.
+if [[ "${dashboard_cert_trust_mode:-public}" == "public" && -z "$existing_cert_file" ]]; then
+  dashboard_cert_ready=0
+  dashboard_cert_attempts=6
+  dashboard_cert_attempt=0
+  while (( dashboard_cert_attempt < dashboard_cert_attempts )); do
+    if dashboard_public_certificate_ready "$public_hostname" "$dashboard_https_port"; then
+      dashboard_cert_ready=1
+      break
+    fi
+    dashboard_cert_attempt=$((dashboard_cert_attempt + 1))
+    if (( dashboard_cert_attempt < dashboard_cert_attempts )); then
+      if (( dashboard_cert_attempt == 1 )); then
+        echo -e "${CYAN}${BOLD}Waiting for the security certificate for ${public_hostname}...${RESET}"
+      fi
+      sleep 5
+    fi
+  done
+  if (( dashboard_cert_ready == 0 )); then
+    echo ""
+    echo -e "${CYAN}${BOLD}Warning:${RESET} the security certificate for ${public_hostname} is not ready, so ${public_url} will not open yet."
+    echo "It usually becomes ready on its own within a few minutes, so there is no need to reinstall."
+    echo "If it stays broken, check that ${public_hostname} points to this server and that ports 80 and 443 are open."
+    echo ""
+  fi
+fi
 
 if (( print_temp_admin_credentials == 1 )); then
   seeded_temp_admin_password="$(read_volume_file "$secrets_volume_name" "seed_admin_temporary_password" | tr -d '\r' | head -n 1 | xargs || true)"
