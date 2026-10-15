@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.11.15"
+SEKANT_DASHBOARD_VERSION="1.11.16"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -423,6 +423,9 @@ clickhouse/config.d/storage.xml
 clickhouse/config.d/limits.xml
 postgres/init.sql
 postgres/reconcile-password-entrypoint.sh
+keycloak/themes/sekant/login/theme.properties
+keycloak/themes/sekant/login/resources/js/tenant-idp-filter.js
+keycloak/themes/sekant/login/resources/js/tenant-username.js
 certs/generate-public-cert.sh
 prerequisites/install.sh
 prerequisites/install.ps1
@@ -1024,6 +1027,7 @@ set_operation() {
 }
 
 enable_trial=0
+enable_multi_tenant=0
 
 for arg in "$@"; do
   case "$arg" in
@@ -1053,6 +1057,9 @@ for arg in "$@"; do
       ;;
     --enable-trial)
       enable_trial=1
+      ;;
+    --enable-multi-tenant)
+      enable_multi_tenant=1
       ;;
     --verbose)
       verbose=1
@@ -3651,6 +3658,14 @@ if (( enable_trial == 1 )); then
   write_env_value "SEKANT_ENABLE_TRIAL" "1"
 elif [[ -z "$(read_env_value "SEKANT_ENABLE_TRIAL")" ]]; then
   write_env_value "SEKANT_ENABLE_TRIAL" "0"
+fi
+
+# Multi-tenancy is opt-in. Once enabled it stays enabled on later runs (an
+# existing value is preserved) so upgrades keep working without the flag.
+if (( enable_multi_tenant == 1 )); then
+  write_env_value "SEKANT_ENABLE_MULTI_TENANT" "1"
+elif [[ -z "$(read_env_value "SEKANT_ENABLE_MULTI_TENANT")" ]]; then
+  write_env_value "SEKANT_ENABLE_MULTI_TENANT" "0"
 fi
 
 if (( dev_mode == 1 )); then
