@@ -164,9 +164,6 @@ services:
       OKTA_OAUTH_CLIENT_SECRET: ${OKTA_OAUTH_CLIENT_SECRET:-}
       SEKANT_ENABLE_TRIAL: ${SEKANT_ENABLE_TRIAL:-0}
       SEKANT_TRIAL_RETENTION_DAYS: ${SEKANT_TRIAL_RETENTION_DAYS:-30}
-      # Opt-in multi-tenancy (organizations / tenants). Off by default so
-      # existing single-tenant installs are unaffected on upgrade.
-      SEKANT_ENABLE_MULTI_TENANT: ${SEKANT_ENABLE_MULTI_TENANT:-0}
       FLUENT_BIT_INGEST_URL: http://fluent-bit:${FLUENT_BIT_INPUT_PORT:-31415}
     expose:
       - "4000"
@@ -259,7 +256,6 @@ services:
       - "8080"
     volumes:
       - sekant_secrets:/opt/keycloak/data/import:ro
-      - ./keycloak/themes:/opt/keycloak/themes:ro
     depends_on:
       init-secrets:
         condition: service_healthy

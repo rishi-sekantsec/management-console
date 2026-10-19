@@ -36,7 +36,6 @@ CREATE TABLE IF NOT EXISTS custom_roles (
   sql_lab_access BOOLEAN DEFAULT FALSE,
   extension_inventory_access BOOLEAN DEFAULT FALSE,
   admin_access BOOLEAN NOT NULL DEFAULT FALSE,
-  all_tenants_access BOOLEAN NOT NULL DEFAULT FALSE,
   trial_access BOOLEAN NOT NULL DEFAULT FALSE,
   content_access VARCHAR(10) NOT NULL DEFAULT 'gamma' CHECK (content_access IN ('gamma', 'alpha', 'admin')),
   content_management BOOLEAN NOT NULL DEFAULT FALSE,
