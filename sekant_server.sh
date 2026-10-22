@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.11.19"
+SEKANT_DASHBOARD_VERSION="1.11.20"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -2425,7 +2425,7 @@ assert_port_free() {
 # pulled for this check, and it is skipped entirely when no suitable image is cached.
 find_dashboard_port_probe_image() {
   local candidate
-  for candidate in "alpine:3.24.1" "alpine:latest" "busybox:latest"; do
+  for candidate in "alpine:3.24.3" "alpine:latest" "busybox:latest"; do
     if docker image inspect "$candidate" >/dev/null 2>&1; then
       printf "%s" "$candidate"
       return 0
@@ -3220,7 +3220,7 @@ resolve_helper_image() {
     printf "%s" "dashboard-init-secrets:latest"
     return 0
   fi
-  printf "%s" "alpine:3.24.1"
+  printf "%s" "alpine:3.24.3"
 }
 
 resolve_init_secrets_image() {

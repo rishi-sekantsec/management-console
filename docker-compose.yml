@@ -49,7 +49,7 @@ services:
       - sekant-net
 
   caddy:
-    image: caddy:2.11.4-alpine
+    image: caddy:2.11.7-alpine
     container_name: sekant-caddy
     restart: unless-stopped
     mem_limit: ${CADDY_MEM_LIMIT:-0}
@@ -192,7 +192,7 @@ services:
       - sekant-net
 
   keycloak:
-    image: quay.io/keycloak/keycloak:26.7.2
+    image: quay.io/keycloak/keycloak:26.8.1
     container_name: sekant-keycloak
     restart: unless-stopped
     mem_limit: ${KEYCLOAK_MEM_LIMIT:-0}
@@ -271,7 +271,7 @@ services:
       - sekant-net
 
   clickhouse:
-    image: clickhouse/clickhouse-server:26.5.1.882
+    image: clickhouse/clickhouse-server:26.9.24.8
     container_name: sekant-clickhouse
     restart: unless-stopped
     # No limit unless CLICKHOUSE_MEM_LIMIT is set in .env. ClickHouse sets its memory ceiling to
@@ -372,7 +372,7 @@ services:
         condition: service_healthy
 
   redis:
-    image: redis:8.8.2-alpine
+    image: redis:8.10.2-alpine
     container_name: sekant-redis
     restart: unless-stopped
     mem_limit: ${REDIS_MEM_LIMIT:-0}
@@ -425,7 +425,7 @@ services:
       - sekant-net
 
   fluent-bit:
-    image: fluent/fluent-bit:5.0.7
+    image: fluent/fluent-bit:5.1.5
     container_name: sekant-fluent-bit
     restart: unless-stopped
     mem_limit: ${FLUENT_BIT_MEM_LIMIT:-0}
@@ -451,7 +451,7 @@ services:
       - sekant-net
 
   readiness:
-    image: alpine:3.24.1
+    image: alpine:3.24.3
     container_name: sekant-readiness
     restart: unless-stopped
     mem_limit: ${READINESS_MEM_LIMIT:-0}
