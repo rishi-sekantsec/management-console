@@ -11,6 +11,7 @@ volumes:
   postgres_data:
     name: sekant_postgres_data
   sekant_secrets:
+  sekant_backend_data:
 
 services:
   init-secrets:
@@ -164,6 +165,12 @@ services:
       OKTA_OAUTH_CLIENT_SECRET: ${OKTA_OAUTH_CLIENT_SECRET:-}
       SEKANT_ENABLE_TRIAL: ${SEKANT_ENABLE_TRIAL:-0}
       SEKANT_TRIAL_RETENTION_DAYS: ${SEKANT_TRIAL_RETENTION_DAYS:-30}
+      PHISHING_CONFIDENCE_EXTERNAL_LOOKUPS: ${PHISHING_CONFIDENCE_EXTERNAL_LOOKUPS:-1}
+      PHISHING_CONFIDENCE_EVALUATION_BUDGET_MS: ${PHISHING_CONFIDENCE_EVALUATION_BUDGET_MS:-5000}
+      TRANCO_CSV_PATH: ${TRANCO_CSV_PATH:-/app/data/tranco-top-1m.csv}
+      # 0 reads the list shipped in the backend image; set a millisecond
+      # interval to opt into periodic online refreshes.
+      TRANCO_REFRESH_INTERVAL_MS: ${TRANCO_REFRESH_INTERVAL_MS:-0}
       FLUENT_BIT_INGEST_URL: http://fluent-bit:${FLUENT_BIT_INPUT_PORT:-31415}
     expose:
       - "4000"
@@ -182,6 +189,7 @@ services:
         condition: service_healthy
     volumes:
       - sekant_secrets:/run/secrets
+      - sekant_backend_data:/app/data
     healthcheck:
       test: ["CMD-SHELL", "node -e \"const http = require('http'); const req = http.request('http://127.0.0.1:4000/health', { timeout: 2000 }, (res) => { process.exit(res.statusCode === 200 ? 0 : 1); }); req.on('error', () => process.exit(1)); req.end();\""]
       interval: 10s
