@@ -182,6 +182,7 @@ CREATE TABLE IF NOT EXISTS sekant.extension_inventory
 (
     schema                               UInt8,
     event_utc_ms                         DateTime64(3, 'UTC'),
+    tenant_id                            LowCardinality(String)           DEFAULT 'default',
     browser_uuid                         String,
     event_uuid                           UUID,
     event_type                           LowCardinality(String),

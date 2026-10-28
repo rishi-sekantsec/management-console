@@ -165,6 +165,9 @@ services:
       OKTA_OAUTH_CLIENT_SECRET: ${OKTA_OAUTH_CLIENT_SECRET:-}
       SEKANT_ENABLE_TRIAL: ${SEKANT_ENABLE_TRIAL:-0}
       SEKANT_TRIAL_RETENTION_DAYS: ${SEKANT_TRIAL_RETENTION_DAYS:-30}
+      # Opt-in multi-tenancy (organizations / tenants). Off by default so
+      # existing single-tenant installs are unaffected on upgrade.
+      SEKANT_ENABLE_MULTI_TENANT: ${SEKANT_ENABLE_MULTI_TENANT:-0}
       PHISHING_CONFIDENCE_EXTERNAL_LOOKUPS: ${PHISHING_CONFIDENCE_EXTERNAL_LOOKUPS:-1}
       PHISHING_CONFIDENCE_EVALUATION_BUDGET_MS: ${PHISHING_CONFIDENCE_EVALUATION_BUDGET_MS:-5000}
       TRANCO_CSV_PATH: ${TRANCO_CSV_PATH:-/app/data/tranco-top-1m.csv}
@@ -264,6 +267,7 @@ services:
       - "8080"
     volumes:
       - sekant_secrets:/opt/keycloak/data/import:ro
+      - ./keycloak/themes:/opt/keycloak/themes:ro
     depends_on:
       init-secrets:
         condition: service_healthy
