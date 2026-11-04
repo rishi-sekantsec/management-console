@@ -15,9 +15,6 @@ clickhouse/config.d/storage.xml
 clickhouse/config.d/limits.xml
 postgres/init.sql
 postgres/reconcile-password-entrypoint.sh
-keycloak/themes/sekant/login/theme.properties
-keycloak/themes/sekant/login/resources/js/tenant-idp-filter.js
-keycloak/themes/sekant/login/resources/js/tenant-username.js
 certs/generate-public-cert.sh
 prerequisites/install.sh
 prerequisites/install.ps1
