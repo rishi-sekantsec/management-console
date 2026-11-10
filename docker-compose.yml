@@ -148,7 +148,7 @@ services:
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
       CLICKHOUSE_URL: ${CLICKHOUSE_URL:-http://clickhouse:8123}
       CLICKHOUSE_STORAGE_POLICY: ${CLICKHOUSE_STORAGE_POLICY:-}
-      CLICKHOUSE_RETENTION_DAYS: ${CLICKHOUSE_RETENTION_DAYS:-700}
+      CLICKHOUSE_RETENTION_DAYS: ${CLICKHOUSE_RETENTION_DAYS:-90}
       CH_APP_ADMIN_USER: ${CH_APP_ADMIN_USER:-ch_app_admin}
       CH_APP_ADMIN_PASSWORD_FILE: /run/secrets/ch_app_admin_password
       CH_USER_ENCRYPTION_KEY_FILE: /run/secrets/ch_user_encryption_key

@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.12.5"
+SEKANT_DASHBOARD_VERSION="1.12.6"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -3537,7 +3537,7 @@ seed_admin_username="admin"
 dashboard_https_port_default="443"
 dashboard_http_port_self_signed_default="8080"
 dashboard_http_port_scan_span="100"
-clickhouse_retention_days_default="730"
+clickhouse_retention_days_default="90"
 dashboard_https_port="$dashboard_https_port_default"
 dashboard_http_port=""
 clickhouse_retention_days="$clickhouse_retention_days_default"
