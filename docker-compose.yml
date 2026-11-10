@@ -50,7 +50,7 @@ services:
       - sekant-net
 
   caddy:
-    image: caddy:2.11.7-alpine
+    image: caddy:2.11.8-alpine
     container_name: sekant-caddy
     restart: unless-stopped
     mem_limit: ${CADDY_MEM_LIMIT:-0}
@@ -433,7 +433,7 @@ services:
       - sekant-net
 
   fluent-bit:
-    image: fluent/fluent-bit:5.1.5
+    image: fluent/fluent-bit:5.1.5-2
     container_name: sekant-fluent-bit
     restart: unless-stopped
     mem_limit: ${FLUENT_BIT_MEM_LIMIT:-0}
