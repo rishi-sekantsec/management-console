@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.12.7"
+SEKANT_DASHBOARD_VERSION="1.12.8"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -1631,14 +1631,23 @@ ensure_clickhouse_disabled_system_logs() {
 }
 
 ensure_clickhouse_retention_ttl() {
-  local retention_days
-  retention_days="$(trim_whitespace "$(read_env_value "CLICKHOUSE_RETENTION_DAYS")")"
-  if [[ -z "$retention_days" ]]; then
+  local retention_weeks
+  retention_weeks="$(trim_whitespace "$(read_env_value "CLICKHOUSE_RETENTION_WEEKS")")"
+  if [[ -z "$retention_weeks" ]]; then
+    # Legacy installs only have CLICKHOUSE_RETENTION_DAYS. Week-aligned TTL can
+    # expire a row up to seven days early, so add a week to keep the old duration.
+    local legacy_days
+    legacy_days="$(trim_whitespace "$(read_env_value "CLICKHOUSE_RETENTION_DAYS")")"
+    if is_valid_retention_days "$legacy_days"; then
+      retention_weeks=$(( (legacy_days + 13) / 7 ))
+    fi
+  fi
+  if [[ -z "$retention_weeks" ]]; then
     return 0
   fi
-  if ! is_valid_retention_days "$retention_days"; then
-    echo -e "${CYAN}${BOLD}Error:${RESET} CLICKHOUSE_RETENTION_DAYS must be a whole number >= 7." >&2
-    echo "Current CLICKHOUSE_RETENTION_DAYS=${retention_days}" >&2
+  if ! is_valid_retention_weeks "$retention_weeks"; then
+    echo -e "${CYAN}${BOLD}Error:${RESET} CLICKHOUSE_RETENTION_WEEKS must be a whole number >= 1." >&2
+    echo "Current CLICKHOUSE_RETENTION_WEEKS=${retention_weeks}" >&2
     return 1
   fi
 
@@ -1652,15 +1661,17 @@ ensure_clickhouse_retention_ttl() {
   local has_security_events
   has_security_events="$(clickhouse_exec_sql "SELECT count() FROM system.tables WHERE database='sekant' AND name='security_events'" | tr -d '\r' | head -n 1 | tr -d '[:space:]' || true)"
   if [[ "$has_security_events" == "1" ]]; then
-    clickhouse_exec_sql "ALTER TABLE sekant.security_events MODIFY TTL toDateTime(event_utc_ms, 'UTC') + INTERVAL ${retention_days} DAY DELETE" >/dev/null
+    clickhouse_exec_sql "ALTER TABLE sekant.security_events MODIFY TTL toMonday(toDateTime(event_utc_ms, 'UTC')) + INTERVAL ${retention_weeks} WEEK DELETE" >/dev/null
     clickhouse_exec_sql "ALTER TABLE sekant.security_events MATERIALIZE TTL" >/dev/null 2>&1 || true
+    clickhouse_exec_sql "ALTER TABLE sekant.security_events MODIFY SETTING ttl_only_drop_parts = 1" >/dev/null 2>&1 || true
   fi
 
   local has_rules_hit
   has_rules_hit="$(clickhouse_exec_sql "SELECT count() FROM system.tables WHERE database='sekant' AND name='rules_hit'" | tr -d '\r' | head -n 1 | tr -d '[:space:]' || true)"
   if [[ "$has_rules_hit" == "1" ]]; then
-    clickhouse_exec_sql "ALTER TABLE sekant.rules_hit MODIFY TTL toDateTime(hit_timestamp, 'UTC') + INTERVAL ${retention_days} DAY DELETE" >/dev/null 2>&1 || true
+    clickhouse_exec_sql "ALTER TABLE sekant.rules_hit MODIFY TTL toDateTime(hit_timestamp, 'UTC') + INTERVAL ${retention_weeks} WEEK DELETE" >/dev/null 2>&1 || true
     clickhouse_exec_sql "ALTER TABLE sekant.rules_hit MATERIALIZE TTL" >/dev/null 2>&1 || true
+    clickhouse_exec_sql "ALTER TABLE sekant.rules_hit MODIFY SETTING ttl_only_drop_parts = 1" >/dev/null 2>&1 || true
   fi
 
   return 0
@@ -2362,6 +2373,12 @@ is_valid_retention_days() {
   (( value >= 7 ))
 }
 
+is_valid_retention_weeks() {
+  local value="$1"
+  [[ "$value" =~ ^[0-9]+$ ]] || return 1
+  (( value >= 1 ))
+}
+
 prompt_port_with_default() {
   local label="$1"
   local default_value="$2"
@@ -2404,17 +2421,17 @@ prompt_positive_int_with_default_text() {
   done
 }
 
-prompt_retention_days_with_default_text() {
+prompt_retention_weeks_with_default_text() {
   local prompt_text="$1"
   local default_value="$2"
   local value=""
   while true; do
     value="$(prompt_with_default_text "$prompt_text" "$default_value")"
-    if is_valid_retention_days "$value"; then
+    if is_valid_retention_weeks "$value"; then
       printf "%s" "$value"
       return 0
     fi
-    echo "Please enter a whole number >= 7." >&2
+    echo "Please enter a whole number >= 1." >&2
   done
 }
 
@@ -3565,10 +3582,10 @@ seed_admin_username="admin"
 dashboard_https_port_default="443"
 dashboard_http_port_self_signed_default="8080"
 dashboard_http_port_scan_span="100"
-clickhouse_retention_days_default="90"
+clickhouse_retention_weeks_default="15"
 dashboard_https_port="$dashboard_https_port_default"
 dashboard_http_port=""
-clickhouse_retention_days="$clickhouse_retention_days_default"
+clickhouse_retention_weeks="$clickhouse_retention_weeks_default"
 existing_cert_file="$(find_existing_cert_file || true)"
 existing_cert_hostname=""
 if [[ -n "$existing_cert_file" ]]; then
@@ -3587,8 +3604,16 @@ configured_dashboard_https_port_default="${configured_dashboard_https_port_defau
 configured_dashboard_http_port_default="$(trim_whitespace "$(read_env_value "DASHBOARD_HTTP_PORT")")"
 configured_clickhouse_mode_default="$(trim_whitespace "$(read_env_value "CLICKHOUSE_SETUP_MODE")")"
 configured_clickhouse_mode_default="${configured_clickhouse_mode_default:-local}"
-configured_clickhouse_retention_days_default="$(trim_whitespace "$(read_env_value "CLICKHOUSE_RETENTION_DAYS")")"
-configured_clickhouse_retention_days_default="${configured_clickhouse_retention_days_default:-$clickhouse_retention_days_default}"
+configured_clickhouse_retention_weeks_default="$(trim_whitespace "$(read_env_value "CLICKHOUSE_RETENTION_WEEKS")")"
+if [[ -z "$configured_clickhouse_retention_weeks_default" ]]; then
+  # Legacy installs stored retention in days. Week-aligned TTL can expire a row
+  # up to seven days early, so add a week to keep the old duration.
+  configured_legacy_retention_days="$(trim_whitespace "$(read_env_value "CLICKHOUSE_RETENTION_DAYS")")"
+  if is_valid_retention_days "$configured_legacy_retention_days"; then
+    configured_clickhouse_retention_weeks_default=$(( (configured_legacy_retention_days + 13) / 7 ))
+  fi
+fi
+configured_clickhouse_retention_weeks_default="${configured_clickhouse_retention_weeks_default:-$clickhouse_retention_weeks_default}"
 
 can_reuse_env=0
 if (( force_reconfigure == 0 )); then
@@ -3614,8 +3639,8 @@ if (( force_reconfigure == 0 && can_reuse_env == 1 )); then
   dashboard_https_port="$(read_env_value "DASHBOARD_HTTPS_PORT")"
   dashboard_https_port="${dashboard_https_port:-$dashboard_https_port_default}"
   dashboard_http_port="$configured_dashboard_http_port_default"
-  clickhouse_retention_days="$(read_env_value "CLICKHOUSE_RETENTION_DAYS")"
-  clickhouse_retention_days="${clickhouse_retention_days:-$clickhouse_retention_days_default}"
+  clickhouse_retention_weeks="$(read_env_value "CLICKHOUSE_RETENTION_WEEKS")"
+  clickhouse_retention_weeks="${clickhouse_retention_weeks:-$configured_clickhouse_retention_weeks_default}"
 else
   echo ""
   echo -e "${CYAN}${BOLD}Hostname & Ports${RESET}"
@@ -3643,7 +3668,7 @@ else
   echo ""
   echo -e "${CYAN}${BOLD}Database${RESET}"
   clickhouse_mode="$(select_clickhouse_mode "$configured_clickhouse_mode_default")"
-  clickhouse_retention_days="$(prompt_retention_days_with_default_text "Data Retention Duration (in days) (default: ${configured_clickhouse_retention_days_default}) : " "$configured_clickhouse_retention_days_default")"
+  clickhouse_retention_weeks="$(prompt_retention_weeks_with_default_text "Data Retention Duration (in weeks) (default: ${configured_clickhouse_retention_weeks_default}) : " "$configured_clickhouse_retention_weeks_default")"
 fi
 
 if [[ -n "$existing_cert_hostname" && "$public_hostname" != "$existing_cert_hostname" ]]; then
@@ -3671,10 +3696,11 @@ write_env_value "KEYCLOAK_URL" "http://keycloak:8080"
 write_env_value "KEYCLOAK_ADMIN" "$seed_admin_username"
 remove_env_value "SEED_ADMIN_PASSWORD"
 write_env_value "KEYCLOAK_HOSTNAME" "$public_url"
-if (( enable_trial == 1 )) && [[ -z "$(read_env_value "CLICKHOUSE_RETENTION_DAYS")" ]]; then
-  clickhouse_retention_days=30
+if (( enable_trial == 1 )) && [[ -z "$(read_env_value "CLICKHOUSE_RETENTION_WEEKS")" && -z "$(read_env_value "CLICKHOUSE_RETENTION_DAYS")" ]]; then
+  clickhouse_retention_weeks=5
 fi
-write_env_value "CLICKHOUSE_RETENTION_DAYS" "$clickhouse_retention_days"
+remove_env_value "CLICKHOUSE_RETENTION_DAYS"
+write_env_value "CLICKHOUSE_RETENTION_WEEKS" "$clickhouse_retention_weeks"
 
 if (( enable_trial == 1 )); then
   write_env_value "SEKANT_ENABLE_TRIAL" "1"

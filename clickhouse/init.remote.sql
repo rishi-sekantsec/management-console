@@ -175,8 +175,8 @@ CREATE TABLE IF NOT EXISTS sekant.security_events
 ENGINE = MergeTree()
 PARTITION BY (toMonday(event_utc_ms), tenant_bucket)
 ORDER BY (tenant_id, event_utc_ms)
-TTL toDateTime(event_utc_ms, 'UTC') + INTERVAL 90 DAY DELETE
-SETTINGS index_granularity = 8192, storage_policy = 's3';
+TTL toMonday(toDateTime(event_utc_ms, 'UTC')) + INTERVAL 15 WEEK DELETE
+SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1, storage_policy = 's3';
 
 CREATE TABLE IF NOT EXISTS sekant.extension_inventory
 (

@@ -138,6 +138,7 @@ CREATE TABLE IF NOT EXISTS alert_rules (
   poll_interval_sec INTEGER DEFAULT 30,
   ch_target_table TEXT,
   ch_mv_name TEXT,
+  system_key VARCHAR(64),
   created_by VARCHAR(255),
   created_at TIMESTAMPTZ DEFAULT NOW(),
   synced_at TIMESTAMPTZ,
@@ -150,6 +151,7 @@ CREATE TABLE IF NOT EXISTS notification_channels (
   apprise_url TEXT,
   is_active BOOLEAN DEFAULT TRUE,
   created_by VARCHAR(255),
+  system_key VARCHAR(64),
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
