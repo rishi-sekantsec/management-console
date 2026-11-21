@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.12.6"
+SEKANT_DASHBOARD_VERSION="1.12.7"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -1872,11 +1872,11 @@ compare_semver() {
   b1="${b1:-0}"; b2="${b2:-0}"; b3="${b3:-0}"
 
   if (( a1 > b1 )); then printf "1"; return 0; fi
-  if (( a1 < b1 )); then printf "-1"; return 0; fi
+  if (( a1 < b1 )); then printf "%s" "-1"; return 0; fi
   if (( a2 > b2 )); then printf "1"; return 0; fi
-  if (( a2 < b2 )); then printf "-1"; return 0; fi
+  if (( a2 < b2 )); then printf "%s" "-1"; return 0; fi
   if (( a3 > b3 )); then printf "1"; return 0; fi
-  if (( a3 < b3 )); then printf "-1"; return 0; fi
+  if (( a3 < b3 )); then printf "%s" "-1"; return 0; fi
   printf "0"
 }
 
@@ -2124,6 +2124,20 @@ remove_named_volumes_if_exist() {
 
   (( ${#volumes_to_remove[@]} == 0 )) && return 0
   docker volume rm "${volumes_to_remove[@]}" >/dev/null 2>&1 || true
+}
+
+remove_volumes_with_prefix() {
+  local prefix=$1
+  local volume_name
+  local -a matches=()
+
+  while IFS= read -r volume_name; do
+    [[ -n "$volume_name" ]] || continue
+    [[ "$volume_name" == "${prefix}"* ]] && matches+=("$volume_name")
+  done < <(docker volume ls -q 2>/dev/null || true)
+
+  (( ${#matches[@]} == 0 )) && return 0
+  docker volume rm "${matches[@]}" >/dev/null 2>&1 || true
 }
 
 resolve_compose_command() {
@@ -3187,7 +3201,8 @@ if [[ "$operation" == "uninstall" ]]; then
     echo -e "${CYAN}${BOLD}Uninstalling Sekant containers, removing .env, and erasing volumes (including TLS certificates)...${RESET}"
     compose_down_preserving_volumes "$existing_compose_project"
     force_remove_sekant_containers "$existing_compose_project"
-    remove_named_volumes_if_exist "$secrets_volume_name" "$clickhouse_volume_name" "$postgres_volume_name" "${existing_compose_project}_fluent_bit_buffer" "${existing_compose_project}_caddy_data"
+    remove_named_volumes_if_exist "$secrets_volume_name" "$clickhouse_volume_name" "$postgres_volume_name" "${existing_compose_project}_fluent_bit_buffer" "${existing_compose_project}_caddy_data" "${existing_compose_project}_sekant_backend_data" "${existing_compose_project}_nginx_cache" "${existing_compose_project}_keycloak_quarkus"
+    remove_volumes_with_prefix "sekant_keycloak_quarkus_"
   else
     echo -e "${CYAN}${BOLD}Uninstalling Sekant containers and removing .env (preserving volumes)...${RESET}"
     compose_down_preserving_volumes "$existing_compose_project"
@@ -3528,6 +3543,19 @@ if (( upgrade == 1 )) && [[ -n "${SEKANT_DASHBOARD_VERSION:-}" ]]; then
     pending_runtime_upgrade=1
   fi
 fi
+if (( upgrade == 1 )) && [[ -n "${SEKANT_DASHBOARD_VERSION:-}" && -z "${SEKANT_FORCE_IMAGE_TAG:-}" ]]; then
+  # A release that changes the compose file must ship its own images. If .env
+  # still pins an older plain version tag, bump it so the upgrade cannot run new
+  # compose with old images. Custom tags (latest, sha, internal names) are left
+  # alone because the operator chose them.
+  current_image_tag="$(trim_whitespace "$(read_env_value "SEKANT_IMAGE_TAG")")"
+  if [[ "$current_image_tag" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+    && [[ "$(compare_semver "$current_image_tag" "${SEKANT_DASHBOARD_VERSION}")" == "-1" ]]; then
+    echo -e "${CYAN}${BOLD}Image tag:${RESET} updating SEKANT_IMAGE_TAG ${current_image_tag} -> ${SEKANT_DASHBOARD_VERSION} so images match this compose file."
+    write_env_value "SEKANT_IMAGE_TAG" "${SEKANT_DASHBOARD_VERSION}"
+  fi
+fi
+
 if (( upgrade == 0 && has_postgres_volume == 1 )) && [[ -n "${SEKANT_DASHBOARD_VERSION:-}" ]]; then
   echo -e "${CYAN}${BOLD}PostgreSQL volume compatibility:${RESET} reusing existing Docker volume ${postgres_volume_name} in place."
   echo "No PostgreSQL data is deleted during a normal upgrade. After moving to this version, avoid running 'docker compose down -v' unless you intentionally want to erase PostgreSQL data." >&2

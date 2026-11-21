@@ -173,7 +173,7 @@ CREATE TABLE IF NOT EXISTS sekant.security_events
     INDEX idx_user_request_id user_request_id TYPE bloom_filter(0.01) GRANULARITY 1
 )
 ENGINE = MergeTree()
-PARTITION BY (toYYYYMM(event_utc_ms), tenant_bucket)
+PARTITION BY (toMonday(event_utc_ms), tenant_bucket)
 ORDER BY (tenant_id, event_utc_ms)
 TTL toDateTime(event_utc_ms, 'UTC') + INTERVAL 90 DAY DELETE
 SETTINGS index_granularity = 8192;

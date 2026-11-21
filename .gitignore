@@ -41,6 +41,7 @@ caddy_data/
 .docker-buildx-auth/
 .docker-auth/
 backend/data/
+reports/docker-security/
 
 # Logs and temp files
 *.log
@@ -65,3 +66,4 @@ login_bad.json
 
 # References and Other Documents
 design-docs
+references/
