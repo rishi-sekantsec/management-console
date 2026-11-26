@@ -7,7 +7,7 @@ CYAN=$'\033[1;36m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-SEKANT_DASHBOARD_VERSION="1.12.8"
+SEKANT_DASHBOARD_VERSION="1.13.0"
 
 echo -e "${GREEN}"
 cat << "EOF"
@@ -80,6 +80,8 @@ EOF
 
 ensure_docker_config_isolated || true
 env_file="${root_dir}/.env"
+invocation_dir="${PWD}"
+license_file="${script_dir}/license.json"
 storage_dir="${root_dir}/clickhouse/config.d"
 force_reconfigure=0
 upgrade=0
@@ -423,6 +425,9 @@ clickhouse/config.d/storage.xml
 clickhouse/config.d/limits.xml
 postgres/init.sql
 postgres/reconcile-password-entrypoint.sh
+keycloak/themes/sekant/login/theme.properties
+keycloak/themes/sekant/login/resources/js/tenant-idp-filter.js
+keycloak/themes/sekant/login/resources/js/tenant-username.js
 certs/generate-public-cert.sh
 prerequisites/install.sh
 prerequisites/install.ps1
@@ -1025,8 +1030,12 @@ set_operation() {
 }
 
 enable_trial=0
+enable_multi_tenant=0
 
-for arg in "$@"; do
+original_args=("$@")
+while (( $# > 0 )); do
+  arg="$1"
+  shift
   case "$arg" in
     --install)
       set_operation "install"
@@ -1055,11 +1064,23 @@ for arg in "$@"; do
     --enable-trial)
       enable_trial=1
       ;;
+    --enable-multi-tenant)
+      enable_multi_tenant=1
+      ;;
     --verbose)
       verbose=1
       ;;
     --quiet)
       quiet=1
+      ;;
+    --license-file)
+      if (( $# > 0 )); then
+        license_file="$1"
+        shift
+      fi
+      ;;
+    --license-file=*)
+      license_file="${arg#*=}"
       ;;
     -*)
       echo -e "${CYAN}${BOLD}Error:${RESET} Unknown flag: ${arg}" >&2
@@ -1127,7 +1148,7 @@ if [[ "$operation" == "install" ]]; then
       fi
 
       new_args=()
-      for arg in "$@"; do
+      for arg in "${original_args[@]}"; do
         if [[ "$arg" == "--upgrade" || "$arg" == "--ugrade" ]]; then
           continue
         fi
@@ -1845,6 +1866,332 @@ remove_env_value() {
 remove_env_file() {
   rm -f "$env_file" >/dev/null 2>&1 || true
 }
+
+# BEGIN INSTALL LICENSE GATES
+# Installation license gate. The license file carries a payload and a signature
+# over that payload's exact bytes. The signature is verified before anything is
+# parsed. A denied permission forces the affected flag off in .env, reports the
+# reason on stderr together with a hint for installing the single tenant version
+# manually, and then stops the install so nothing gated starts on its own. The
+# detailed reason goes to the install log.
+license_public_key_pem="$(cat <<'SEKANT_LICENSE_PUBLIC_KEY'
+-----BEGIN PUBLIC KEY-----
+MIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEA3e042TYWz0tzJ27C6H9g
+xHAImxMrvWKdJqEZCktpC+DKHxhRqlUTdvDnTgrYkqzZC7l3wIqRrErFeJJkVnIw
+lEgZQupKUNlkt6xm5tn6kvqf3wlm6k381R8ui40kMOnIKwuu2s0Kti7TfW54p57j
+7KXnUMb8emUF0/FVN292dp3678IQO6P6YbRRCm+E25tazQ37PJPyjz/6oawrnYLG
+trfKQMR9xa6hyZReGzx5/Yd3/EvtOMYuL5iTfiRJdEYaEQOpK8fmj7ug/pmNw50t
+LB0RmO1W5097gNJXWqtnPA/yaio3ZQMM8RhPAk7BPEyPP4JrcXAHFHVT7yrAo1mY
+i1vfsS/iQJPreOoi9eTLeY5tClby+RnDlI8O2Bpn0hmk++gHdM9ujmYoEbua1ewm
+nU7bkaucb0S0L/9UIQ1gVCkTKRMATWCVDchTLqoC+7f7ZQDPLe0VtDShFm2555Dv
+3CwTS5wgTP6P2eLCYKdouZH8w45JPVDyS8qIHQGPkByfAgMBAAE=
+-----END PUBLIC KEY-----
+SEKANT_LICENSE_PUBLIC_KEY
+)"
+
+# permission|env variable|cli variable. Add one line per future gated flag.
+license_gated_flags=(
+  "multi-tenant|SEKANT_ENABLE_MULTI_TENANT|enable_multi_tenant"
+  "trial|SEKANT_ENABLE_TRIAL|enable_trial"
+)
+
+license_log_file="${root_dir}/sekant-install.log"
+license_default_file="${script_dir}/license.json"
+license_error_color=$'\033[1;31m'
+license_hint_color=$'\033[1;36m'
+
+license_log() {
+  local message="$1"
+  local timestamp=""
+  timestamp="$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || true)"
+  printf '%s %s\n' "${timestamp:-unknown-time}" "$message" >>"${license_log_file}" 2>/dev/null || true
+}
+
+license_value_enabled() {
+  local value="${1:-}"
+  value="${value//[[:space:]]/}"
+  case "${value,,}" in
+    1|true|yes|on) return 0 ;;
+  esac
+  return 1
+}
+
+license_mask_customer_key() {
+  local key="${1:-}"
+  if (( ${#key} <= 6 )); then
+    printf '%s' '***'
+    return 0
+  fi
+  printf '%s...%s' "${key:0:4}" "${key: -2}"
+}
+
+license_permission_label() {
+  local permission="$1"
+  printf '%s' "${permission//-/ }"
+}
+
+license_terminal_reason() {
+  local reason="$1"
+  case "$reason" in
+    "license file not found"*) printf '%s' 'License file not found' ;;
+    "license payload is missing") printf '%s' 'License file has no payload' ;;
+    "license signature is missing") printf '%s' 'License signature is missing' ;;
+    "signature is not valid base64") printf '%s' 'License signature is not valid base64' ;;
+    "signature verification failed") printf '%s' 'License signature verification failed' ;;
+    "license payload is not valid JSON") printf '%s' 'License payload is not valid JSON' ;;
+    "openssl is not available") printf '%s' 'License could not be verified: openssl is not installed' ;;
+    "temporary directory could not be created") printf '%s' 'License could not be verified: a temporary directory could not be created' ;;
+    "public key could not be written") printf '%s' 'License could not be verified: the public key could not be written' ;;
+    "license payload could not be written") printf '%s' 'License could not be verified: the payload could not be written' ;;
+    *) printf '%s' 'License could not be verified' ;;
+  esac
+}
+
+license_hint_single_tenant() {
+  printf '\n%s%s%s\n\n' "$license_hint_color" \
+    'You can still use normal single tenant version with : "bash sekant_server.sh --install"' \
+    "$RESET" >&2
+}
+
+# A signed license is one JSON document:
+#   {"payload":{...},"signature":"<base64>"}
+# The signature covers the exact bytes of the payload value as written in the
+# file, so the generator signs the payload text it writes and the installer
+# extracts that same text. The signature member must come last.
+license_payload_body=""
+
+license_payload_text() {
+  local document="" payload=""
+  document="$(cat "$license_file" 2>/dev/null)" || return 0
+  [[ "$document" == *'"signature"'* ]] || return 0
+  payload="${document%\"signature\"*}"
+  payload="${payload%"${payload##*[![:space:]]}"}"
+  payload="${payload%,}"
+  payload="${payload%"${payload##*[![:space:]]}"}"
+  [[ "$payload" == *'"payload"'* ]] || return 0
+  payload="${payload#*\"payload\"}"
+  payload="${payload#*:}"
+  payload="${payload#"${payload%%[![:space:]]*}"}"
+  [[ "$payload" == *[![:space:]]* ]] || return 0
+  printf '%s' "$payload"
+}
+
+license_signature_value() {
+  local document="" tail=""
+  document="$(cat "$license_file" 2>/dev/null)" || return 0
+  tail="${document##*\"signature\"}"
+  [[ "$tail" != "$document" ]] || return 0
+  tail="${tail#*:}"
+  tail="${tail#"${tail%%[![:space:]]*}"}"
+  tail="${tail#\"}"
+  [[ "$tail" == *'"'* ]] || return 0
+  printf '%s' "${tail%%\"*}"
+}
+
+license_text_is_object() {
+  local compact=""
+  compact="$(printf '%s' "${1:-}" | tr -d '\r\n\t ')"
+  [[ "$compact" == \{*\} ]]
+}
+
+license_payload_compact() {
+  printf '%s' "$license_payload_body" | tr -d '\r\n\t '
+}
+
+license_customer_key() {
+  local key=""
+  if command -v jq >/dev/null 2>&1; then
+    key="$(printf '%s' "$license_payload_body" | jq -r 'if (.customerKey | type) == "string" then .customerKey else empty end' 2>/dev/null || true)"
+  else
+    key="$(printf '%s' "$license_payload_body" | sed -n 's/.*"customerKey"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' 2>/dev/null || true)"
+  fi
+  printf '%s' "${key%%$'\n'*}"
+}
+
+# True only when the signed payload sets the permission to boolean true.
+license_permission_granted() {
+  local permission="$1"
+  if command -v jq >/dev/null 2>&1; then
+    [[ "$(printf '%s' "$license_payload_body" | jq -r --arg k "$permission" '(.permissions[$k] == true)' 2>/dev/null || true)" == "true" ]]
+    return
+  fi
+  local compact="" body=""
+  compact="$(license_payload_compact)"
+  if [[ "$compact" =~ \"permissions\"[[:space:]]*:[[:space:]]*\{([^\{\}]*)\} ]]; then
+    body="${BASH_REMATCH[1]}"
+  fi
+  [[ -n "$body" && "$body" =~ \"${permission}\"[[:space:]]*:[[:space:]]*true([[:space:]]*(,|\}|$)) ]]
+}
+
+apply_license_gates() {
+  # Install time only. An upgrade never re-evaluates a flag.
+  if [[ "${operation:-install}" != "install" || "${upgrade:-0}" != "0" ]]; then
+    return 0
+  fi
+
+  # A flag requested on the command line is always checked. A flag that is only
+  # set in .env is checked on a fresh install, so a deployment that was licensed
+  # earlier keeps working even if the license file is no longer present.
+  local install_is_fresh=0
+  if [[ "${has_existing_volumes:-1}" == "0" && "${has_existing_runtime:-1}" == "0" ]]; then
+    install_is_fresh=1
+  fi
+
+  local -a requested_permissions=()
+  local -a requested_env_keys=()
+  local -a requested_cli_vars=()
+  local entry permission env_key cli_var cli_value env_value requested
+  for entry in "${license_gated_flags[@]}"; do
+    IFS='|' read -r permission env_key cli_var <<<"$entry"
+    [[ -n "$permission" && -n "$env_key" && -n "$cli_var" ]] || continue
+    cli_value="${!cli_var:-0}"
+    env_value="$(read_env_value "$env_key" 2>/dev/null || true)"
+    requested=0
+    if [[ "$cli_value" == "1" ]]; then
+      requested=1
+    elif (( install_is_fresh == 1 )) && license_value_enabled "$env_value"; then
+      requested=1
+    fi
+    if (( requested == 1 )); then
+      requested_permissions+=("$permission")
+      requested_env_keys+=("$env_key")
+      requested_cli_vars+=("$cli_var")
+    fi
+  done
+
+  # Nothing requested: no lookup, no log line, no change.
+  if (( ${#requested_permissions[@]} == 0 )); then
+    return 0
+  fi
+
+  # Pick up the license file from the installer folder first, then from the
+  # folder the installer was started from. An explicit --license-file value is
+  # never overridden.
+  if [[ "$license_file" == "$license_default_file" && ! -f "$license_file" \
+        && -f "${invocation_dir:-$PWD}/license.json" ]]; then
+    license_file="${invocation_dir:-$PWD}/license.json"
+  fi
+
+  # Verification runs in a subshell so its temporary directory is removed by an
+  # EXIT trap on every path and a failing command cannot trip `set -e`.
+  local verdict=""
+  verdict="$(
+    set +e
+    if [[ ! -f "$license_file" ]]; then
+      printf 'DENY:license file not found: %s' "$license_file"
+      exit 0
+    fi
+    if ! command -v openssl >/dev/null 2>&1; then
+      printf 'DENY:openssl is not available'
+      exit 0
+    fi
+    document_text="$(cat "$license_file" 2>/dev/null)"
+    if [[ "$document_text" != *'"payload"'* ]]; then
+      printf 'DENY:license payload is missing'
+      exit 0
+    fi
+    if [[ "$document_text" != *'"signature"'* ]]; then
+      printf 'DENY:license signature is missing'
+      exit 0
+    fi
+    payload="$(license_payload_text)"
+    if [[ -z "$payload" ]]; then
+      printf 'DENY:license payload is missing'
+      exit 0
+    fi
+    signature_b64="$(license_signature_value)"
+    if [[ -z "$signature_b64" ]]; then
+      printf 'DENY:license signature is missing'
+      exit 0
+    fi
+    tmp_dir="$(mktemp -d 2>/dev/null)" || {
+      printf 'DENY:temporary directory could not be created'
+      exit 0
+    }
+    trap 'rm -rf "$tmp_dir"' EXIT
+    printf '%s\n' "$license_public_key_pem" >"$tmp_dir/public.pem" 2>/dev/null || {
+      printf 'DENY:public key could not be written'
+      exit 0
+    }
+    printf '%s' "$signature_b64" | base64 -d >"$tmp_dir/license.sig" 2>/dev/null || {
+      printf 'DENY:signature is not valid base64'
+      exit 0
+    }
+    printf '%s' "$payload" >"$tmp_dir/payload.json" 2>/dev/null || {
+      printf 'DENY:license payload could not be written'
+      exit 0
+    }
+    openssl dgst -sha256 -verify "$tmp_dir/public.pem" \
+      -sigopt rsa_padding_mode:pss -sigopt rsa_pss_saltlen:32 \
+      -signature "$tmp_dir/license.sig" "$tmp_dir/payload.json" >/dev/null 2>&1 || {
+      printf 'DENY:signature verification failed'
+      exit 0
+    }
+    if command -v jq >/dev/null 2>&1; then
+      jq -e . "$tmp_dir/payload.json" >/dev/null 2>&1 || {
+        printf 'DENY:license payload is not valid JSON'
+        exit 0
+      }
+    elif ! license_text_is_object "$payload"; then
+      printf 'DENY:license payload is not valid JSON'
+      exit 0
+    fi
+    printf 'OK'
+  )"
+
+  local deny_reason=""
+  if [[ "$verdict" != "OK" ]]; then
+    deny_reason="${verdict#DENY:}"
+    deny_reason="${deny_reason:-license verification did not complete}"
+  fi
+
+  local index label=""
+  if [[ -n "$deny_reason" ]]; then
+    for index in "${!requested_permissions[@]}"; do
+      label="$(license_permission_label "${requested_permissions[$index]}")"
+      printf -v "${requested_cli_vars[$index]}" '%s' "0"
+      write_env_value "${requested_env_keys[$index]}" "0" >/dev/null 2>&1 || true
+      printf '\n%s%s for %s version%s\n' "$license_error_color" \
+        "$(license_terminal_reason "$deny_reason")" "$label" "$RESET" >&2
+      license_log "permission '${requested_permissions[$index]}' denied: ${deny_reason}"
+    done
+    license_hint_single_tenant
+    license_log "install stopped: license verification failed"
+    exit 1
+  fi
+
+  # The signature is valid, so the payload can be read now.
+  license_payload_body="$(license_payload_text)"
+  local customer_key=""
+  customer_key="$(license_customer_key)"
+  if [[ -n "$customer_key" ]]; then
+    license_log "customer key: $(license_mask_customer_key "$customer_key")"
+  fi
+
+  local denied=0
+  for index in "${!requested_permissions[@]}"; do
+    permission="${requested_permissions[$index]}"
+    if license_permission_granted "$permission"; then
+      license_log "permission '${permission}' granted"
+      continue
+    fi
+    printf -v "${requested_cli_vars[$index]}" '%s' "0"
+    write_env_value "${requested_env_keys[$index]}" "0" >/dev/null 2>&1 || true
+    label="$(license_permission_label "$permission")"
+    printf '\n%sLicense does not grant %s version%s\n' "$license_error_color" "$label" "$RESET" >&2
+    license_log "permission '${permission}' denied: permission not granted"
+    denied=1
+  done
+
+  if (( denied == 1 )); then
+    license_hint_single_tenant
+    license_log "install stopped: license does not grant a requested permission"
+    exit 1
+  fi
+
+  return 0
+}
+# END INSTALL LICENSE GATES
 
 ensure_image_config() {
   local repo_default="sekantsec/management-console"
@@ -3696,6 +4043,11 @@ write_env_value "KEYCLOAK_URL" "http://keycloak:8080"
 write_env_value "KEYCLOAK_ADMIN" "$seed_admin_username"
 remove_env_value "SEED_ADMIN_PASSWORD"
 write_env_value "KEYCLOAK_HOSTNAME" "$public_url"
+has_existing_runtime=0
+if has_running_sekant_deployment; then
+  has_existing_runtime=1
+fi
+
 if (( enable_trial == 1 )) && [[ -z "$(read_env_value "CLICKHOUSE_RETENTION_WEEKS")" && -z "$(read_env_value "CLICKHOUSE_RETENTION_DAYS")" ]]; then
   clickhouse_retention_weeks=5
 fi
@@ -3708,15 +4060,18 @@ elif [[ -z "$(read_env_value "SEKANT_ENABLE_TRIAL")" ]]; then
   write_env_value "SEKANT_ENABLE_TRIAL" "0"
 fi
 
+# Multi-tenancy is opt-in. Once enabled it stays enabled on later runs (an
+# existing value is preserved) so upgrades keep working without the flag.
+if (( enable_multi_tenant == 1 )); then
+  write_env_value "SEKANT_ENABLE_MULTI_TENANT" "1"
+elif [[ -z "$(read_env_value "SEKANT_ENABLE_MULTI_TENANT")" ]]; then
+  write_env_value "SEKANT_ENABLE_MULTI_TENANT" "0"
+fi
+
 if (( dev_mode == 1 )); then
   write_env_value "SEKANT_DEV_BRANCH" "1"
 else
   write_env_value "SEKANT_DEV_BRANCH" "0"
-fi
-
-has_existing_runtime=0
-if has_running_sekant_deployment; then
-  has_existing_runtime=1
 fi
 
 if [[ "$operation" == "stop" ]]; then
@@ -3762,6 +4117,14 @@ if [[ "$operation" == "start" ]]; then
 
   echo -e "${CYAN}${BOLD}Notice:${RESET} No existing stopped containers found; continuing with install flow."
   operation="install"
+fi
+
+# A gated flag needs a valid license at install time. The function decides which
+# flags to check: a flag requested on the command line is always checked, while a
+# flag that is only set in .env is checked on a fresh install. It runs after the
+# start-to-install fallback so that path is gated too.
+if [[ "$operation" == "install" ]] && (( upgrade == 0 )); then
+  apply_license_gates
 fi
 
 # A publicly trusted certificate keeps the plain-HTTP listener on port 80, where Caddy needs

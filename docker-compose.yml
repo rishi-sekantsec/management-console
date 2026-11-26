@@ -253,6 +253,9 @@ services:
       # 0 reads the list shipped in the backend image; set a millisecond
       # interval to opt into periodic online refreshes.
       TRANCO_REFRESH_INTERVAL_MS: ${TRANCO_REFRESH_INTERVAL_MS:-0}
+      # Opt-in multi-tenancy (organizations / tenants). Off by default so
+      # existing single-tenant installs are unaffected on upgrade.
+      SEKANT_ENABLE_MULTI_TENANT: ${SEKANT_ENABLE_MULTI_TENANT:-0}
       FLUENT_BIT_INGEST_URL: http://fluent-bit:${FLUENT_BIT_INPUT_PORT:-31415}
     expose:
       - "4000"
@@ -359,6 +362,7 @@ services:
       # proxy settings are build-time options. Only this 4 MB build output is
       # writable; the rest of the root filesystem stays read only.
       - keycloak_quarkus:/opt/keycloak/lib/quarkus
+      - ./keycloak/themes:/opt/keycloak/themes:ro
     depends_on:
       init-secrets:
         condition: service_healthy

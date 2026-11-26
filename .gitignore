@@ -63,6 +63,7 @@ Thumbs.db
 cookies.txt
 login_ok.json
 login_bad.json
+load/k6/out/
 
 # References and Other Documents
 design-docs
